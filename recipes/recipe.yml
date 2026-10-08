@@ -1,6 +1,6 @@
 ---
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
-name: Butrelinux-Labs
+name: lab
 description: This is where I will be testing new butrelinux features
 
 base-image: quay.io/centos-bootc/centos-bootc
