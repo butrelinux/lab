@@ -1,0 +1,11 @@
+name: butre-image-info
+shortdesc: The butre-image-info module writes custom image metadata to image-info.json and patches os-release.
+example: |
+  type: nix
+  flavor: upstream             # or determinate
+  nix-version: latest          # or pin, e.g. a specific release
+  experimental-features: [nix-command, flakes]
+  build-users: 32
+  selinux: true
+  extra-conf: |
+    trusted-users = root @wheel
