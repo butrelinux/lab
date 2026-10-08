@@ -14,7 +14,7 @@ modules:
   - type: nix
     source: local
     flavor: upstream 
-    nix-version: latest
+    nix-version: 2.23.0
 #    experimental-features: [nix-command, flakes]
     build-users: 32
     selinux: true
