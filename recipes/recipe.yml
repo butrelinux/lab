@@ -12,6 +12,7 @@ modules:
         destination: /
 
   - type: nix
+    source: local
     flavor: upstream 
     nix-version: latest
 #    experimental-features: [nix-command, flakes]
