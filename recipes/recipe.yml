@@ -20,5 +20,13 @@ modules:
     selinux: true
     extra-conf: |
       trusted-users = root @wheel
-  
+      
+  - type: systemd
+    system:
+      disabled:
+        - nfs-client.target
+      masked:
+        - rpcbind.service
+        - rpcbind.socket
+
   - type: signing # this sets up the proper policy & signing files for signed images to work fully
