@@ -268,6 +268,7 @@ set -uo pipefail
 SEED=${NIX_SEED_DIR:-/usr/lib/nix-seed}
 DEST=${NIX_DEST_DIR:-/var/lib/nix}
 PROFILE=${NIX_PROFILE_DIR:-/nix/var/nix/profiles/default}
+RUN_DIR=${NIX_RUN_DIR:-/run}
 
 log() { echo "[nix-upgrade] $*"; }
 ver_of() { "$1" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1; }
@@ -275,8 +276,12 @@ ver_of() { "$1" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1;
 do_upgrade() {
   local seed_store=$1 conf p name
   local -a copied=()
-  conf=$(mktemp -d) || return 1
-  export NIX_CONF_DIR="$conf" NIX_CONFIG='build-users-group =' NIX_REMOTE=
+  # This runs before basic.target, when /tmp is still on the read-only root
+  # (it only becomes a tmpfs once tmp.mount has run). Keep all scratch space in
+  # /run, and point TMPDIR there too, since Nix creates temp dirs of its own
+  # (for example when nix-env builds the new profile generation).
+  conf=$(mktemp -d "$RUN_DIR/nix-upgrade.XXXXXX") || return 1
+  export TMPDIR="$conf" NIX_CONF_DIR="$conf" NIX_CONFIG='build-users-group =' NIX_REMOTE=
 
   # Leftovers from an interrupted run (copies are renamed into place atomically).
   rm -rf "$DEST"/store/.upgrade-* 2>/dev/null
