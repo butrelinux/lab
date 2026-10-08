@@ -115,12 +115,16 @@ install_upstream() {
   install -d -m 1777 /nix/var/nix/{temproots,profiles/per-user,gcroots/per-user}
   cp -a "$self"/store/. /nix/store/
 
-  # Empty conf during the build so build-users-group isn't consulted.
+  # Nix defaults build-users-group to "nixbld" when run as root, even with an
+  # empty config, and the group doesn't exist yet at build time (sysusers
+  # creates it at boot). Explicitly disable it for these registration steps;
+  # we aren't building anything, only registering paths and creating the profile.
   export NIX_CONF_DIR="$TMP/empty-conf"; mkdir -p "$NIX_CONF_DIR"
+  export NIX_CONFIG='build-users-group ='
   export NIX_REMOTE=
   "$nix_storepath/bin/nix-store" --load-db < "$self/.reginfo"
   "$nix_storepath/bin/nix-env" -p /nix/var/nix/profiles/default -i "$nix_storepath"
-  unset NIX_CONF_DIR NIX_REMOTE
+  unset NIX_CONF_DIR NIX_CONFIG NIX_REMOTE
 
   install -d -m 0755 /etc/nix
   {
