@@ -114,6 +114,10 @@ install_upstream() {
   install -d -m 0755 /nix/var/nix/{db,gcroots,profiles,daemon-socket}
   install -d -m 1777 /nix/var/nix/{temproots,profiles/per-user,gcroots/per-user}
   cp -a "$self"/store/. /nix/store/
+  # `cp -a store/. dest/` also copies the source dir's own attributes
+  # (root:root 0755) onto /nix/store; restore the multi-user layout.
+  chown "root:${NIXBLD_GID}" /nix/store
+  chmod 1775 /nix/store
 
   # Nix defaults build-users-group to "nixbld" when run as root, even with an
   # empty config, and the group doesn't exist yet at build time (sysusers
@@ -290,6 +294,9 @@ if [ "$SELINUX" = "true" ]; then
   semanage fcontext -a -t usr_t  '/var/lib/nix(/.*)?'
   semanage fcontext -a -t bin_t  '/var/lib/nix/store/[^/]+/s?bin(/.*)?'
   semanage fcontext -a -t lib_t  '/var/lib/nix/store/[^/]+/lib(64)?(/.*)?'
+  # systemd (init_t) must be able to create the listening socket here; it
+  # can't in a usr_t directory.
+  semanage fcontext -a -t var_run_t '/var/lib/nix/var/nix/daemon-socket(/.*)?'
   semanage fcontext -a -e /var/lib/nix /nix
 fi
 
