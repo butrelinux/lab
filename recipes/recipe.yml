@@ -71,6 +71,17 @@ modules:
         - tuned-profiles-atomic
         - lm_sensors
         - earlyoom
+        - pipewire 
+        - pipewire-pulseaudio
+        - pipewire-alsa
+        - wireplumber
+        - pipewire-jack-audio-connection-kit
+        - alsa-firmware
+        - pipewire-utils
+        - plasma-pa
+        
+
+
         
   - type: dnf
     install:
