@@ -11,7 +11,7 @@ modules:
       - source: system
         destination: /
 
-    - type: script
+  - type: script
     snippets:
       - dnf config-manager --set-enabled crb
       - dnf install -y epel-release epel-next-release
