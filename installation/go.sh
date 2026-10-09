@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+IMAGE="ghcr.io/butrelinux/lab:latest"
+BUILDER="ghcr.io/osbuild/image-builder-cli:latest"
+
 SKIPINSTALL="${SKIPINSTALL:-0}"
 BUILDONLY="${BUILDONLY:-0}"
 CLEAN="${CLEAN:-0}"
+
+OUTPUT_DIR="./output"
+DISK="${OUTPUT_DIR}/test-disk.qcow2"
+CONFIG="./config.toml"
 
 if [[ "$SKIPINSTALL" == "1" && "$CLEAN" == "1" ]]; then
   echo "ERROR: SKIPINSTALL and CLEAN cannot both be set to 1."
@@ -11,71 +18,60 @@ if [[ "$SKIPINSTALL" == "1" && "$CLEAN" == "1" ]]; then
 fi
 
 if [[ "$CLEAN" == "1" ]]; then
-  sudo find ./output -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-  rm -f ./test-disk.qcow2
+  sudo find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 fi
 
-mkdir -p ./output
+mkdir -p "$OUTPUT_DIR"
+
+if [[ ! -f "$CONFIG" ]]; then
+  echo "ERROR: Missing $CONFIG"
+  exit 1
+fi
+
 if [[ "$SKIPINSTALL" != "1" ]]; then
-  # Build the installation ISO.
-  sudo bash <<'ROOT'
-set -Eeuo pipefail
+  sudo podman pull "$IMAGE"
+  sudo podman pull "$BUILDER"
 
-podman pull ghcr.io/butrelinux/lab:latest
-
-podman run \
-  --rm \
-  --privileged \
-  --cgroup-manager=cgroupfs \
-  -v "$PWD/config.toml:/config.toml:ro" \
-  -v "$PWD/output:/output" \
-  -v /var/lib/containers/storage:/var/lib/containers/storage \
-  quay.io/centos-bootc/bootc-image-builder:latest \
-  --type anaconda-iso \
-  --config /config.toml \
-  ghcr.io/butrelinux/lab:latest
-ROOT
+  sudo podman --cgroup-manager=cgroupfs run \
+    --rm \
+    --privileged \
+    -v "$PWD/$OUTPUT_DIR:/output" \
+    -v "$PWD/$CONFIG:/config.toml:ro" \
+    -v /var/lib/containers/storage:/var/lib/containers/storage \
+    "$BUILDER" \
+    build \
+    --bootc-ref "$IMAGE" \
+    --blueprint /config.toml \
+    --output-dir /output \
+    --output-name test-disk \
+    qcow2
 
   if [[ "$BUILDONLY" == "1" ]]; then
+    echo "Build complete: $DISK"
     exit 0
   fi
-
-  # Create a fresh test disk.
-  rm -f ./test-disk.qcow2
-  qemu-img create -f qcow2 ./test-disk.qcow2 20G
-
-  # Run the installer.
-  qemu-system-x86_64 \
-  -enable-kvm \
-  -cpu host \
-  -m 4096 \
-  -smp 2 \
-  -drive file=./test-disk.qcow2,if=virtio,format=qcow2 \
-  -cdrom ./output/bootiso/install.iso \
-  -boot d \
-  -vga virtio \
-  -device virtio-net-pci,netdev=n1 \
-  -netdev user,id=n1,hostfwd=tcp:127.0.0.1:2222-:22 \
-  -no-reboot
-
-echo "Installation complete."
-echo "Default username: butrelinux"
-echo "Default password: butrelinux"
-echo "You can SSH into the installed system using:"
-echo "  ssh -p 2222 butrelinux@localhost"
-
-tput bel
-
-read -n 1 -s -p "Press any key to boot up the installed system (or Ctrl+C to exit)..."
-echo ""
 fi
 
-qemu-system-x86_64 \
+if [[ ! -f "$DISK" ]]; then
+  echo "ERROR: Disk not found: $DISK"
+  echo "Run without SKIPINSTALL=1 to build it first."
+  exit 1
+fi
+
+echo "Starting ButreLinux in QEMU..."
+echo "Test username: butrelinux"
+echo "Test password: butrelinux"
+echo "SSH (if enabled in the image): ssh -p 2222 butrelinux@localhost"
+echo "Press Ctrl+C to shut down QEMU."
+
+tput bel 2>/dev/null || true
+
+exec sudo qemu-system-x86_64 \
   -enable-kvm \
   -cpu host \
   -m 2048 \
   -smp 2 \
-  -drive file=./test-disk.qcow2,if=virtio,format=qcow2 \
+  -drive "file=$DISK,if=virtio,format=qcow2" \
   -vga virtio \
   -device virtio-net-pci,netdev=n1 \
   -netdev user,id=n1,hostfwd=tcp:127.0.0.1:2222-:22
