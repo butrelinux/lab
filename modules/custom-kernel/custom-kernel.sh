@@ -25,14 +25,27 @@ log "Starting custom-kernel module..."
 
 BUILD_DEPS=""
 
+# Snapshot of what the base image shipped, taken before anything is installed.
+# track_build_deps checks this rather than the live rpmdb, so a package that an
+# earlier step pulled in as a dependency (e.g. gcc/clang via kernel-devel) is
+# still tracked when a later step names it explicitly.
+_PRE_PKGS=$(mktemp)
+rpm -qa --qf '%{NAME}\n' | sort -u >"${_PRE_PKGS}"
+
+# Remember whether the akmods account pre-existed (the package scriptlets
+# create it and removing the package does not delete it).
+_AKMODS_USER_PRE=false
+getent passwd akmods >/dev/null 2>&1 && _AKMODS_USER_PRE=true
+_AKMODS_GROUP_PRE=false
+getent group akmods >/dev/null 2>&1 && _AKMODS_GROUP_PRE=true
+
 track_build_deps() {
     for _p in "$@"; do
-        if ! rpm -q --quiet "${_p}" 2>/dev/null; then
-            case " ${BUILD_DEPS} " in
-            *" ${_p} "*) ;;
-            *) BUILD_DEPS="${BUILD_DEPS} ${_p}" ;;
-            esac
-        fi
+        grep -qx "${_p}" "${_PRE_PKGS}" && continue
+        case " ${BUILD_DEPS} " in
+        *" ${_p} "*) ;;
+        *) BUILD_DEPS="${BUILD_DEPS} ${_p}" ;;
+        esac
     done
 }
 
@@ -81,6 +94,18 @@ cleanup_build_deps() {
         dnf -y remove ${_installed} \
             || err "Failed to remove some build-time dependencies (non-fatal)."
     fi
+
+    # The akmods account is created by package scriptlets and survives removal.
+    if [ "${_AKMODS_USER_PRE}" = "false" ] && getent passwd akmods >/dev/null 2>&1; then
+        log "Removing stray akmods user."
+        userdel akmods 2>/dev/null || true
+    fi
+    if [ "${_AKMODS_GROUP_PRE}" = "false" ] && getent group akmods >/dev/null 2>&1; then
+        log "Removing stray akmods group."
+        groupdel akmods 2>/dev/null || true
+    fi
+
+    rm -f "${_PRE_PKGS}"
 
     log "Cleaning DNF caches."
     dnf -y clean all >/dev/null 2>&1
@@ -298,7 +323,9 @@ EOF
 
 log "Enabling EPEL and CRB repos."
 track_build_deps dnf-plugins-core
-dnf -y install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${EL_VERSION}.noarch.rpm"
+# epel-release ships in CentOS Stream's extras repo; the upstream "latest" URL
+# can be older than what the base image already has and would downgrade it.
+rpm -q epel-release >/dev/null 2>&1 || dnf -y install epel-release
 dnf -y install dnf-plugins-core
 dnf config-manager --set-enabled crb
 
