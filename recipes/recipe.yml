@@ -12,9 +12,9 @@ modules:
         destination: /
 
   - type: script
-    snippets:
-      - dnf config-manager --set-enabled crb
-      - dnf install -y epel-release
+    scripts:
+      - selinux.sh
+      - repos.sh
 
   - type: nix
     source: local
