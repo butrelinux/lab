@@ -22,7 +22,7 @@ pretty_name=$(jq -r '.pretty_name // "butrelinux"' <<< "$1")
 tag=$(jq -r '.tag // "latest"' <<< "$1")
 like=$(jq -r '.like // "rhel fedora"' <<< "$1")
 logo=$(jq -r '.logo // "kde-logo-icon"' <<< "$1")
-home_url=$(jq -r '.home_url // "https://github.com/butrelinux' <<< "$1")
+home_url=$(jq -r '.home_url // "https://github.com/butrelinux"' <<< "$1")
 support_url=$(jq -r '.support_url // "https://github.com/butrelinux/lab/issues"' <<< "$1")
 documentation_url=$(jq -r '.documentation_url // "PLACEHOLDER"' <<< "$1")
 
