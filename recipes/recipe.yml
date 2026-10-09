@@ -79,7 +79,7 @@ modules:
         - alsa-firmware
         - pipewire-utils
         - plasma-pa
-        
+
 
 
         
@@ -120,6 +120,13 @@ modules:
       masked:
         - rpcbind.service
         - rpcbind.socket
+
+  - type: custom-kernel
+    source: local
+    kernel: cachyos-lto
+    initramfs: true
+    zfs: true
+    nvidia: false
 
   - type: fonts
     fonts:
