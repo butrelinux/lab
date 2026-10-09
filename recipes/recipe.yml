@@ -135,4 +135,9 @@ modules:
        - NerdFontsSymbolsOnly
        - Noto
 
+
+  - type: image-info
+    source: local
+    variant: lab
+    
   - type: signing # this sets up the proper policy & signing files for signed images to work fully
