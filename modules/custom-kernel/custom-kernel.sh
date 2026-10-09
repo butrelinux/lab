@@ -13,6 +13,85 @@ err() { printf '[custom-kernel] Error: %s\n' "$*" >&2; }
 log "Starting custom-kernel module..."
 
 # ---------------------------------------------------------------------------
+# Build-time dependency tracking
+# ---------------------------------------------------------------------------
+# Call track_build_deps BEFORE installing anything that is only needed to
+# build. Only packages that are NOT already installed get recorded, so
+# packages that were part of the base image are never removed.
+#
+# cleanup_build_deps runs from an EXIT trap (success or failure), removes the
+# recorded packages (plus whatever dnf considers newly-unneeded dependencies
+# of them), and then cleans the dnf caches.
+
+BUILD_DEPS=""
+
+track_build_deps() {
+    for _p in "$@"; do
+        if ! rpm -q --quiet "${_p}" 2>/dev/null; then
+            case " ${BUILD_DEPS} " in
+            *" ${_p} "*) ;;
+            *) BUILD_DEPS="${BUILD_DEPS} ${_p}" ;;
+            esac
+        fi
+    done
+}
+
+cleanup_build_deps() {
+    _rc=$?
+    trap - EXIT
+    set +e
+
+    # Reduce the tracked list to what is actually installed now.
+    _installed=""
+    for _p in ${BUILD_DEPS}; do
+        rpm -q --quiet "${_p}" 2>/dev/null && _installed="${_installed} ${_p}"
+    done
+
+    # Drop anything that a package OUTSIDE the removal set depends on,
+    # iterating until stable (dropping one can block another).
+    _pass=0
+    while [ "${_pass}" -lt 10 ]; do
+        _pass=$((_pass + 1))
+        _changed=false
+        _keep=""
+        for _p in ${_installed}; do
+            _blocked=false
+            for _u in $(rpm -q --whatrequires --qf '%{NAME}\n' "${_p}" 2>/dev/null \
+                        | grep -v '^no package requires' | sort -u); do
+                [ "${_u}" = "${_p}" ] && continue
+                case " ${_installed} " in
+                *" ${_u} "*) ;;
+                *) _blocked=true; break ;;
+                esac
+            done
+            if [ "${_blocked}" = "true" ]; then
+                log "Keeping ${_p} (required by a non-build package)."
+                _changed=true
+            else
+                _keep="${_keep} ${_p}"
+            fi
+        done
+        _installed="${_keep}"
+        [ "${_changed}" = "false" ] && break
+    done
+
+    if [ -n "${_installed}" ]; then
+        log "Removing build-time dependencies:${_installed}"
+        # shellcheck disable=SC2086
+        dnf -y remove ${_installed} \
+            || err "Failed to remove some build-time dependencies (non-fatal)."
+    fi
+
+    log "Cleaning DNF caches."
+    dnf -y clean all >/dev/null 2>&1
+    rm -rf /var/cache/dnf/* /var/tmp/dnf-* /var/cache/libdnf5 2>/dev/null
+
+    exit "${_rc}"
+}
+
+trap cleanup_build_deps EXIT
+
+# ---------------------------------------------------------------------------
 # Distro detection (EL10 only)
 # ---------------------------------------------------------------------------
 
@@ -47,7 +126,6 @@ log "Detected base distro: EL ${EL_VERSION}"
 KERNEL_TYPE=$(printf '%s' "$1" | jq -r '.kernel // empty')
 INITRAMFS=$(printf '%s' "$1"   | jq -r '.initramfs // false')
 NVIDIA=$(printf '%s' "$1"      | jq -r '.nvidia // false')
-ZFS=$(printf '%s' "$1"         | jq -r '.zfs // false')
 SIGNING_KEY=$(printf '%s' "$1" | jq -r '.sign.key // ""')
 SIGNING_CERT=$(printf '%s' "$1"| jq -r '.sign.cert // ""')
 MOK_PASSWORD=$(printf '%s' "$1"| jq -r '.sign["mok-password"] // ""')
@@ -98,7 +176,6 @@ fi
 
 COPR_REPO="bieszczaders/kernel-cachyos-lto"
 KERNEL_PKG="kernel-cachyos-lto"
-KERNEL_DEVEL_PKG="kernel-cachyos-lto-devel-matched kernel-cachyos-lto-devel"
 KERNEL_PACKAGES="kernel-cachyos-lto kernel-cachyos-lto-core kernel-cachyos-lto-modules kernel-cachyos-lto-devel-matched"
 
 # ---------------------------------------------------------------------------
@@ -220,6 +297,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 log "Enabling EPEL and CRB repos."
+track_build_deps dnf-plugins-core
 dnf -y install "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${EL_VERSION}.noarch.rpm"
 dnf -y install dnf-plugins-core
 dnf config-manager --set-enabled crb
@@ -243,10 +321,11 @@ dnf -y remove \
 rm -rf /usr/lib/modules/* || true
 
 log "Resolving kernel source (cachyos-lto via COPR)."
-dnf -y install dnf-plugins-core
 log "Enabling COPR repo: ${COPR_REPO}"
 dnf -y copr enable "${COPR_REPO}"
 log "Installing kernel packages: ${KERNEL_PACKAGES}"
+# Devel packages and akmods are build-only; the kernel itself stays.
+track_build_deps kernel-cachyos-lto-devel-matched kernel-cachyos-lto-devel akmods
 # shellcheck disable=SC2086
 dnf -y install $KERNEL_PACKAGES akmods
 
@@ -270,6 +349,8 @@ log "Enabling RPM Fusion Free repo."
 dnf -y install \
     "https://download1.rpmfusion.org/free/el/rpmfusion-free-release-${EL_VERSION}.noarch.rpm"
 
+# The kmod RPM is installed manually below, so akmod-v4l2loopback is build-only.
+track_build_deps akmod-v4l2loopback
 dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=noscripts \
     akmod-v4l2loopback
 
@@ -316,144 +397,6 @@ dnf -y remove rpmfusion-free-release
 rm -f /etc/yum.repos.d/rpmfusion-free*.repo
 
 # ---------------------------------------------------------------------------
-# Build OpenZFS (DKMS)
-# ---------------------------------------------------------------------------
-# ZFS isn't in RPM Fusion, and OpenZFS's precompiled kABI-tracking kmods are
-# only verified against the distro stock kernel. This always builds via DKMS
-# against ${KERNEL_VERSION}.
-#
-# NOTE: zfs-dkms/dkms are deliberately NOT removed after build. Removing
-# zfs-dkms triggers its %preun, which calls `dkms remove` and deletes the
-# very .ko files we just built.
-
-if [ "${ZFS}" = "true" ]; then
-    log "Building OpenZFS (DKMS) for kernel: ${KERNEL_VERSION}"
-
-    if [ ! -e "/lib/modules/${KERNEL_VERSION}/build" ]; then
-        err "Kernel build tree missing at /lib/modules/${KERNEL_VERSION}/build"
-        err "Ensure ${KERNEL_DEVEL_PKG} is installed before this step."
-        exit 1
-    fi
-
-    ZFS_BUILD_TOOLS="elfutils-libelf-devel"
-    # shellcheck disable=SC2086
-    dnf -y install dkms gcc make $ZFS_BUILD_TOOLS
-    dnf mark install dkms
-
-    # Install zfs-release to get repo config and GPG keys
-    dnf -y install "https://zfsonlinux.org/epel/zfs-release-3-0$(rpm --eval '%{dist}').noarch.rpm"
-
-    # -----------------------------------------------------------------
-    # Discover latest ZFS version + library names from testing repo
-    # -----------------------------------------------------------------
-
-    # NOTE: OpenZFS testing repo is HTTP-only.
-    ZFS_REPO_URL="http://download.zfsonlinux.org/epel-testing/${EL_VERSION}.2/x86_64"
-
-    ZFS_LATEST=$(curl -fsL "${ZFS_REPO_URL}/" | \
-        grep -o 'zfs-[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-[0-9][0-9]*\.el10\.x86_64\.rpm' | \
-        sort -V | tail -n1)
-
-    if [ -z "$ZFS_LATEST" ]; then
-        err "Could not discover latest ZFS version from ${ZFS_REPO_URL}"
-        exit 1
-    fi
-
-    # Extract version-release string 
-    ZFS_VER_REL=$(echo "$ZFS_LATEST" | sed 's/^zfs-//; s/\.x86_64\.rpm$//')
-    ZFS_VER=$(echo "$ZFS_VER_REL" | sed 's/-[0-9].*//')
-    ZFS_REL=$(echo "$ZFS_VER_REL" | sed 's/^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-//')
-    _zfs_ver="$ZFS_VER"
-    log "Discovered OpenZFS ${_zfs_ver}-${ZFS_REL} from testing repo."
-
-    _discover_pkg() {
-        _pattern="$1"
-        curl -fsL "${ZFS_REPO_URL}/" | \
-            grep -o "${_pattern}-${ZFS_VER}-${ZFS_REL}\.x86_64\.rpm" | \
-            sed 's/-.*//' | sort -V | tail -n1
-    }
-
-    LIBNVPAIR=$(_discover_pkg 'libnvpair[0-9]*')
-    LIBUUTIL=$(_discover_pkg 'libuutil[0-9]*')
-    LIBZFS=$(_discover_pkg 'libzfs[0-9]*')
-    LIBZPOOL=$(_discover_pkg 'libzpool[0-9]*')
-
-    if [ -z "${LIBNVPAIR}" ] || [ -z "${LIBUUTIL}" ] || [ -z "${LIBZFS}" ] || [ -z "${LIBZPOOL}" ]; then
-        err "Could not discover ZFS library packages for ZFS ${_zfs_ver}-${ZFS_REL}"
-        exit 1
-    fi
-
-    # -----------------------------------------------------------------
-    # Download and install
-    # -----------------------------------------------------------------
-    log "Downloading OpenZFS ${_zfs_ver} packages..."
-    cd /tmp
-    for pkg in \
-        "${LIBNVPAIR}-${ZFS_VER}-${ZFS_REL}.x86_64" \
-        "${LIBUUTIL}-${ZFS_VER}-${ZFS_REL}.x86_64" \
-        "${LIBZFS}-${ZFS_VER}-${ZFS_REL}.x86_64" \
-        "${LIBZPOOL}-${ZFS_VER}-${ZFS_REL}.x86_64" \
-        "python3-pyzfs-${ZFS_VER}-${ZFS_REL}.noarch" \
-        "zfs-dracut-${ZFS_VER}-${ZFS_REL}.noarch" \
-        "zfs-${ZFS_VER}-${ZFS_REL}.x86_64" \
-        "zfs-dkms-${ZFS_VER}-${ZFS_REL}.noarch"; do
-        curl -fsLO "${ZFS_REPO_URL}/${pkg}.rpm" || {
-            err "Failed to download ${pkg}.rpm"
-            exit 1
-        }
-    done
-
-    rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-openzfs-el-10
-    rpm --checksig -v ./*.rpm || {
-        err "OpenZFS RPM signature verification failed"
-        exit 1
-    }
-    log "Installing OpenZFS ${_zfs_ver} RPMs (bypassing kernel-devel dep check)..."
-    rpm -Uvh ./*.rpm --nodeps
-    rm -f ./*.rpm
-    cd - >/dev/null
-
-    # -----------------------------------------------------------------
-    # Patch DKMS build for experimental kernel support
-    # -----------------------------------------------------------------
-    ZFS_SRC="/usr/src/zfs-${_zfs_ver}"
-
-    # Method 1: patch dkms.conf if it invokes configure directly
-    if [ -f "${ZFS_SRC}/dkms.conf" ]; then
-        if grep -q 'configure' "${ZFS_SRC}/dkms.conf"; then
-            sed -i 's|\./configure|./configure --enable-linux-experimental|' "${ZFS_SRC}/dkms.conf"
-            sed -i 's|configure |configure --enable-linux-experimental |' "${ZFS_SRC}/dkms.conf"
-            log "Patched dkms.conf with --enable-linux-experimental"
-        fi
-    fi
-
-    # Method 2: patch configure script directly as fallback
-    if [ -f "${ZFS_SRC}/configure" ]; then
-        sed -i 's/enable_linux_experimental=no/enable_linux_experimental=yes/' "${ZFS_SRC}/configure"
-        log "Patched configure script to default --enable-linux-experimental=yes"
-    fi
-
-    log "Building OpenZFS ${_zfs_ver} DKMS module for ${KERNEL_VERSION}."
-    if ! dkms install -m zfs -v "${_zfs_ver}" -k "${KERNEL_VERSION}" --force; then
-        err "OpenZFS DKMS build failed for kernel ${KERNEL_VERSION}."
-        err "OpenZFS ${_zfs_ver} + linux ${KERNEL_VERSION} may have an upstream compat gap."
-        err "Check https://github.com/openzfs/zfs/issues for updates."
-        exit 1
-    fi
-
-    if ! find "/usr/lib/modules/${KERNEL_VERSION}" -name "zfs.ko*" | grep -q .; then
-        err "zfs.ko not found under /usr/lib/modules/${KERNEL_VERSION} after DKMS build."
-        exit 1
-    fi
-
-    depmod "${KERNEL_VERSION}"
-
-    log "Cleaning up ZFS repo configuration."
-    dnf -y remove zfs-release || true
-    rm -f /etc/yum.repos.d/zfs*.repo
-fi
-
-# ---------------------------------------------------------------------------
 # Build Nvidia via upstream .run payload
 # ---------------------------------------------------------------------------
 
@@ -461,11 +404,16 @@ if [ "${NVIDIA}" = "true" ]; then
     log "Starting upstream NVIDIA payload build for kernel ${KERNEL_VERSION}."
 
     # Explicit Mesa drivers ensure software fallback works in VMs
-    NVIDIA_BUILD_TOOLS="perl elfutils-libelf-devel checkpolicy selinux-policy-devel clang llvm lld"
+    NVIDIA_BUILD_TOOLS="perl elfutils-libelf-devel checkpolicy selinux-policy-devel clang llvm lld dkms gcc make"
     NVIDIA_RUNTIME_DEPS="libglvnd libglvnd-egl libglvnd-gles libglvnd-glx libglvnd-opengl egl-x11 egl-wayland2 egl-gbm xorg-x11-server-Xwayland mesa-dri-drivers mesa-vulkan-drivers mesa-libEGL mesa-libGL"
 
+    # Only the compile toolchain is tracked for removal; runtime deps and
+    # base utilities (curl, tar, bzip2, policycoreutils) are left alone.
     # shellcheck disable=SC2086
-    dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=noscripts --setopt=skip_unavailable=1 $NVIDIA_BUILD_TOOLS $NVIDIA_RUNTIME_DEPS dkms curl tar bzip2 policycoreutils gcc make
+    track_build_deps $NVIDIA_BUILD_TOOLS
+
+    # shellcheck disable=SC2086
+    dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=noscripts --setopt=skip_unavailable=1 $NVIDIA_BUILD_TOOLS $NVIDIA_RUNTIME_DEPS curl tar bzip2 policycoreutils
 
     if [ ! -d "$KERNEL_SOURCE" ]; then
         err "Missing kernel source path after installing devel package: $KERNEL_SOURCE"
@@ -617,22 +565,14 @@ if [ "${SECURE_BOOT}" = "true" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Cleanup
+# Cleanup (non-package artefacts; packages are removed by the EXIT trap)
 # ---------------------------------------------------------------------------
-
-if [ "${ZFS}" = "true" ] && [ -n "${_zfs_ver}" ]; then
-    rm -rf "/usr/src/zfs-${_zfs_ver}"
-fi
 
 log "Removing kernel build trees."
 rm -rf /usr/lib/modules/*/build /usr/lib/modules/*/source /usr/src/nvidia-*
 
 log "Removing akmods build artefacts."
 rm -rf /var/cache/akmods /var/lib/dkms
-
-log "Cleaning DNF caches."
-dnf -y clean all || true
-rm -rf /var/cache/dnf/* /var/tmp/dnf-* || true
 
 # ---------------------------------------------------------------------------
 # Initramfs
@@ -672,16 +612,6 @@ if [ "${NVIDIA}" = "true" ]; then
         fi
     done
     log "All Nvidia modules present."
-fi
-
-if [ "${ZFS}" = "true" ]; then
-    for _name in spl zfs; do
-        if ! find "/usr/lib/modules/${KERNEL_VERSION}" -name "${_name}.ko*" | grep -q .; then
-            err "Missing ZFS module: ${_name}.ko*"
-            exit 1
-        fi
-    done
-    log "All ZFS modules present."
 fi
 
 log "Custom kernel installation complete."
