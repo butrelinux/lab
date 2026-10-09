@@ -89,7 +89,7 @@ The disk must already exist.
 
 Remove generated files in `output/`, rebuild the disk, and start QEMU:
 
-    CLEAN=1 ./run.sh
+    CLEAN=1 ./go.sh
 
 **Warning:** `CLEAN=1` deletes the contents of the script's `output/` directory. Store anything important elsewhere.
 
