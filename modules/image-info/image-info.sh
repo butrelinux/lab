@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The butre-image-info module writes custom image metadata to
-# /usr/share/ublue-os/image-info.json and patches /usr/lib/os-release.
+# The image-info module writes custom image metadata to
+# /usr/share/butrelinux/image-info.json and patches /usr/lib/os-release.
 #
 # Required config:
 #   variant: the image variant suffix (e.g. "lts", "stable", "nvidia")
 #
-# Optional config overrides (sensible defaults are provided):
+# Optional config overrides (defaults are provided):
 #   vendor, name, pretty_name, tag, like, logo,
 #   home_url, support_url, documentation_url
 
@@ -16,19 +16,19 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 variant=$(jq -r '.variant // empty' <<< "$1")
-vendor=$(jq -r '.vendor // "butrejp"' <<< "$1")
+vendor=$(jq -r '.vendor // "butrelinux"' <<< "$1")
 name=$(jq -r '.name // "butrelinux"' <<< "$1")
 pretty_name=$(jq -r '.pretty_name // "butrelinux"' <<< "$1")
 tag=$(jq -r '.tag // "latest"' <<< "$1")
 like=$(jq -r '.like // "rhel fedora"' <<< "$1")
 logo=$(jq -r '.logo // "kde-logo-icon"' <<< "$1")
-home_url=$(jq -r '.home_url // "https://github.com/butrejp/butrelinux"' <<< "$1")
-support_url=$(jq -r '.support_url // "https://github.com/butrejp/butrelinux/issues"' <<< "$1")
-documentation_url=$(jq -r '.documentation_url // "https://github.com/butrejp/butrelinux/wiki"' <<< "$1")
+home_url=$(jq -r '.home_url // "https://github.com/butrelinux' <<< "$1")
+support_url=$(jq -r '.support_url // "https://github.com/butrelinux/lab/issues"' <<< "$1")
+documentation_url=$(jq -r '.documentation_url // "PLACEHOLDER"' <<< "$1")
 
 # Validate required field
 if [[ -z "$variant" || "$variant" == "null" ]]; then
-    echo "ERROR: butre-image-info module requires 'variant' to be set."
+    echo "ERROR: image-info module requires 'variant' to be set."
     exit 1
 fi
 
@@ -37,25 +37,24 @@ fi
 # ---------------------------------------------------------------------------
 
 VERSION_ID=$(grep '^VERSION_ID=' /usr/lib/os-release | cut -d'"' -f2)
-FULL_IMAGE_NAME="${name}-${variant}"
 
 if [[ -n "${IMAGE_REGISTRY:-}" ]]; then
-    image_ref="ostree-image-signed:docker://${IMAGE_REGISTRY}/${FULL_IMAGE_NAME}"
+    image_ref="ostree-image-signed:docker://${IMAGE_REGISTRY}/${variant}"
 else
-    image_ref="ostree-image-signed:docker://ghcr.io/${vendor}/${FULL_IMAGE_NAME}"
+    image_ref="ostree-image-signed:docker://ghcr.io/${vendor}/${variant}"
 fi
 
 # ---------------------------------------------------------------------------
 # Write image-info.json
 # ---------------------------------------------------------------------------
 
-echo "Writing image-info.json for ${FULL_IMAGE_NAME}..."
+echo "Writing image-info.json for ${variant}..."
 
-mkdir -p /usr/share/ublue-os
+mkdir -p /usr/share/butrelinux
 
-cat >/usr/share/ublue-os/image-info.json <<EOF
+cat >/usr/share/butrelinux/image-info.json <<EOF
 {
-  "image-name": "${FULL_IMAGE_NAME}",
+  "image-name": "${variant}",
   "image-vendor": "${vendor}",
   "image-tag": "${tag}",
   "image-ref": "${image_ref}"
@@ -88,4 +87,4 @@ sed -i "s|^VENDOR_URL=.*|VENDOR_URL=\"${home_url}\"|" /usr/lib/os-release
 sed -i "s|^BUG_REPORT_URL=.*|BUG_REPORT_URL=\"${support_url}\"|" /usr/lib/os-release
 sed -i "s|^DOCUMENTATION_URL=.*|DOCUMENTATION_URL=\"${documentation_url}\"|" /usr/lib/os-release
 
-echo "butre-image-info module completed successfully."
+echo "image-info module completed successfully."

@@ -1,0 +1,30 @@
+modules:
+  - type: fonts
+    fonts:
+      nerd-fonts:
+       - JetBrainsMono
+       - NerdFontsSymbolsOnly
+       - Noto
+
+  - type: systemd
+    system:
+      enabled:
+        - sddm.service
+        - tuned.service
+        - tuned-ppd.service
+        - earlyoom.service
+      disabled:
+        - nfs-client.target
+      masked:
+        - rpcbind.service
+        - rpcbind.socket
+#        - systemd-oomd.service
+        - system-flatpak-setup.timer
+        - systemd-resolved.service
+
+  - type: kargs
+    kargs:
+      - amdgpu.ppfeaturemask=0xffffffff
+      - split_lock_detect=off
+      
+  - type: signing

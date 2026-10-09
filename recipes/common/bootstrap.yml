@@ -1,0 +1,24 @@
+modules:
+  - type: files
+    files:
+      - source: system
+        destination: /
+
+  - type: script
+    scripts:
+      - selinux.sh
+      - repos.sh
+
+  - type: nix
+    source: local
+    flavor: upstream 
+    nix-version: latest
+#    experimental-features: [nix-command, flakes]
+    build-users: 32
+    selinux: true
+    extra-conf: |
+      trusted-users = root @wheel
+
+
+
+

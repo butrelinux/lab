@@ -1,0 +1,67 @@
+modules:
+  - type: dnf
+    install:
+      install-weak-deps: true
+      packages:
+        - kde-partitionmanager
+        - krfb
+        - krdc
+        - khelpcenter
+        - policycoreutils
+        - policycoreutils-python-utils
+        - policycoreutils-devel
+        - selinux-policy-targeted
+        - libsemanage
+        - plasma-desktop
+        - plasma-workspace-wayland
+        - kde-settings-plasma
+        - flatpak-kcm
+        - kscreen
+        - kinfocenter
+        - sddm
+        - sddm-kcm
+        - sddm-breeze
+        - polkit-kde
+        - plasma-nm
+        - plasma-disks
+        - plasma-browser-integration
+        - kde-connect
+        - bluedevil
+        - dolphin
+        - kate
+        - konsole
+        - kio-admin
+        - ark
+        - spectacle
+        - okular
+        - plasma-systemmonitor
+        - kde-gtk-config
+        - kcalc
+        - htop
+        - xdg-desktop-portal-kde
+        - powerdevil
+        - tuned
+        - tuned-ppd
+        - tuned-profiles-atomic
+        - lm_sensors
+        - earlyoom
+        - pipewire 
+        - pipewire-pulseaudio
+        - pipewire-alsa
+        - wireplumber
+        - pipewire-jack-audio-connection-kit
+        - alsa-firmware
+        - pipewire-utils
+        - plasma-pa
+    install:
+      install-weak-deps: false
+      packages:
+        - plasma-discover
+        - plasma-discover-flatpak
+        - plasma-discover-libs
+        - plasma-discover-kns
+    remove:
+      auto-remove: true
+      packages:
+        - rhc
+        - insights-client
