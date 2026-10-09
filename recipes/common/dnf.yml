@@ -52,6 +52,7 @@ modules:
         - alsa-firmware
         - pipewire-utils
         - plasma-pa
+  - type: dnf
     install:
       install-weak-deps: false
       packages:
