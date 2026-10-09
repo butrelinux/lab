@@ -105,10 +105,6 @@ The example blueprint configures:
 | Password | `butrelinux` |
 | Group | `wheel` |
 
-These values only apply if the image-builder build successfully applies the blueprint.
-
-Membership in `wheel` provides administrative access only if the guest's sudo configuration grants that group permission.
-
 ## SSH Access
 
 The script forwards host port `2222` to guest port `22`.
