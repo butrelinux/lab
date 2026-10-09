@@ -61,7 +61,7 @@ fi
 echo "Starting ButreLinux in QEMU..."
 echo "Test username: butrelinux"
 echo "Test password: butrelinux"
-echo "SSH (if enabled in the image): ssh -p 2222 butrelinux@localhost"
+echo "SSH : ssh -p 2222 butrelinux@localhost"
 echo "Press Ctrl+C to shut down QEMU."
 
 tput bel 2>/dev/null || true
