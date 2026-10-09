@@ -11,6 +11,11 @@ modules:
       - source: system
         destination: /
 
+    - type: script
+    snippets:
+      - dnf config-manager --set-enabled crb
+      - dnf install -y epel-release epel-next-release
+
   - type: nix
     source: local
     flavor: upstream 
@@ -20,7 +25,86 @@ modules:
     selinux: true
     extra-conf: |
       trusted-users = root @wheel
-      
+
+
+    install:
+      packages:
+        - kde-partitionmanager
+        - krfb
+        - krdc
+        - khelpcenter
+        - policycoreutils
+        - policycoreutils-python-utils
+        - policycoreutils-devel
+        - selinux-policy-targeted
+        - libsemanage
+        - plasma-desktop
+        - plasma-workspace-wayland
+        - kde-settings-plasma
+        - flatpak-kcm
+        - kscreen
+        - kinfocenter
+        - sddm
+        - sddm-kcm
+        - sddm-breeze
+        - polkit-kde
+        - plasma-nm
+        - plasma-disks
+        - plasma-browser-integration
+        - kde-connect
+        - bluedevil
+        - dolphin
+        - kate
+        - konsole
+        - kio-admin
+        - ark
+        - spectacle
+        - okular
+        - plasma-systemmonitor
+        - kde-gtk-config
+        - kcalc
+        - micro
+        - btop
+        - htop
+        - xdg-desktop-portal-kde
+        - firefox
+        - powerdevil
+        - tuned
+        - tuned-ppd
+        - tuned-profiles-atomic
+        - lm_sensors
+        - earlyoom
+        
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - plasma-discover
+        - plasma-discover-flatpak
+        - plasma-discover-libs
+        - plasma-discover-kns
+
+  - type: kargs
+    kargs:
+      - amdgpu.ppfeaturemask=0xffffffff
+      - split_lock_detect=off
+
+  - type: systemd
+    system:
+      enabled:
+        - sddm.service
+        - tuned.service
+        - tuned-ppd.service
+        - earlyoom.service
+      disabled:
+        - nfs-client.target
+      masked:
+        - rpcbind.service
+        - rpcbind.socket
+        - systemd-oomd.service
+        - system-flatpak-setup.timer
+        - systemd-resolved.service
+
   - type: systemd
     system:
       disabled:
@@ -28,5 +112,12 @@ modules:
       masked:
         - rpcbind.service
         - rpcbind.socket
+
+  - type: fonts
+    fonts:
+      nerd-fonts:
+       - JetBrainsMono
+       - NerdFontsSymbolsOnly
+       - Noto
 
   - type: signing # this sets up the proper policy & signing files for signed images to work fully
