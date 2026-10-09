@@ -15,6 +15,7 @@ if [[ "$CLEAN" == "1" ]]; then
   rm -f ./test-disk.qcow2
 fi
 
+mkdir -p ./output
 if [[ "$SKIPINSTALL" != "1" ]]; then
   # Build the installation ISO.
   sudo bash <<'ROOT'
