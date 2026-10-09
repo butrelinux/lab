@@ -9,7 +9,7 @@ selinux_policy_version="$(rpm -q --qf '%{version}-%{release}' selinux-policy)"
 dnf install -y --setopt=install_weak_deps=False \
     "selinux-policy-devel-${selinux_policy_version}"
 
-cd ./files/selinux/tuned-ppd-logging
+cd ./selinux/tuned-ppd-logging.te
 make -f /usr/share/selinux/devel/Makefile tuned-ppd-logging.pp
 cd ../../..
 
