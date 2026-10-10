@@ -28,4 +28,3 @@ modules:
       - split_lock_detect=off
       
   - type: signing
-  

@@ -808,4 +808,3 @@ if [ "${NVIDIA}" = "true" ]; then
 fi
 
 log "Custom kernel installation complete."
-# Build-time dependencies are removed and DNF caches cleaned by the EXIT trap.

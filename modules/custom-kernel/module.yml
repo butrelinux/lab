@@ -30,4 +30,3 @@ example: |
   # - With `stock`, the vendor-signed kernel image is left alone and only modules
   #   that have no signature (v4l2loopback, NVIDIA) are signed with your key.
   # - ZFS support has been removed.
-      
