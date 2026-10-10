@@ -1,8 +1,12 @@
 name: custom-kernel
-shortdesc: Install the CachyOS LTO kernel on EL10-based images with optional NVIDIA and SecureBoot signing.
+shortdesc: Install an alternative kernel (CachyOS LTO, ELRepo kernel-ml, CentOS Hyperscale) or keep the stock one on EL10-based images, with optional v4l2loopback, NVIDIA and SecureBoot signing.
 example: |
   type: custom-kernel
-  # Kernel type is hardcoded to cachyos-lto. No other kernels are supported.
+  kernel: cachyos-lto   # Default: cachyos-lto — one of: cachyos-lto, ml, hyperscale, stock
+                        #   cachyos-lto  CachyOS LTO kernel from COPR (clang/LTO build)
+                        #   ml           ELRepo kernel-ml (mainline); not signed for SecureBoot
+                        #   hyperscale   CentOS Hyperscale SIG kernel (EL10 support is untested)
+                        #   stock        keep the base image kernel and only build modules for it
   initramfs: true       # Default: false — generate a dracut initramfs for the installed kernel
   nvidia: true          # Default: false — build and install the NVIDIA driver from upstream .run payload
   sign:                 # Optional — omit the entire block to disable SecureBoot signing
@@ -20,4 +24,10 @@ example: |
     mount:
       type: file
       destination: /tmp/certs/MOK.pem
+  # Notes:
+  # - v4l2loopback is always built (akmods) against the selected kernel.
+  # - Build-time packages (compilers, kernel-devel, akmods) are removed at the end.
+  # - With `stock`, the vendor-signed kernel image is left alone and only modules
+  #   that have no signature (v4l2loopback, NVIDIA) are signed with your key.
+  # - ZFS support has been removed.
       

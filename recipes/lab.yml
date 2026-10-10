@@ -13,7 +13,6 @@ modules:
     source: local
     kernel: cachyos-lto
     initramfs: true
-    zfs: true
     nvidia: false
 
   - type: image-info

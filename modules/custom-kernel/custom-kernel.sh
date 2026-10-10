@@ -1,9 +1,19 @@
 #!/bin/sh
 
 #### derived from https://github.com/jokokucing/Origami-Linux/blob/main/modules/custom-kernel/custom-kernel.sh
-#### Hardened for EL10 + cachyos-lto only.
+#### Hardened for EL10.
 #### DNF5 is a soft requirement; DNF4 should work with minor tweaks.
 #### NOTE: this module is largely untested.  caveat emptor.
+####
+#### Module options (JSON in $1):
+####   kernel:     cachyos-lto (default) | ml | hyperscale | stock
+####                 cachyos-lto  kernel-cachyos-lto from COPR (clang/LTO build)
+####                 ml           ELRepo kernel-ml (mainline, unsigned for Secure Boot)
+####                 hyperscale   CentOS Hyperscale SIG kernel
+####                 stock        keep the base image kernel; only build modules for it
+####   initramfs:  true|false     regenerate the initramfs
+####   nvidia:     true|false     build the NVIDIA driver from the upstream .run
+####   sign:       {key, cert, mok-password}   SecureBoot signing
 
 set -eu
 
@@ -16,8 +26,8 @@ log "Starting custom-kernel module..."
 # Build-time dependency tracking
 # ---------------------------------------------------------------------------
 # Call track_build_deps BEFORE installing anything that is only needed to
-# build. Only packages that are NOT already installed get recorded, so
-# packages that were part of the base image are never removed.
+# build. Only packages that were NOT part of the base image (see snapshot
+# below) get recorded, so base image packages are never removed.
 #
 # cleanup_build_deps runs from an EXIT trap (success or failure), removes the
 # recorded packages (plus whatever dnf considers newly-unneeded dependencies
@@ -160,11 +170,61 @@ if [ -z "${KERNEL_TYPE}" ]; then
     KERNEL_TYPE="cachyos-lto"
 fi
 
-if [ "${KERNEL_TYPE}" != "cachyos-lto" ]; then
+# Per-kernel settings.
+#   KERNEL_REPLACE      remove the base image kernel and install another
+#   KERNEL_SIGN         the kernel image itself needs our SecureBoot signature
+#   MODULE_SIGN_SCOPE   all      = sign every module (kernel ships unsigned)
+#                       unsigned = sign only modules without a signature
+#                                  (leave vendor-signed modules alone)
+#   KERNEL_PKG          package whose version defines the kernel version
+#   KERNEL_PACKAGES     packages to install (stock: devel tree only)
+#   KERNEL_BUILD_PKGS   build-only packages to remove again at the end
+#   KERNEL_REPO_OPT     extra dnf option needed to see the kernel packages
+#   KERNEL_VERSION_MARK glob the resulting kernel version must match
+KERNEL_REPLACE=true
+KERNEL_SIGN=true
+MODULE_SIGN_SCOPE=all
+KERNEL_REPO_OPT=""
+KERNEL_VERSION_MARK=""
+
+case "${KERNEL_TYPE}" in
+cachyos-lto)
+    COPR_REPO="bieszczaders/kernel-cachyos-lto"
+    KERNEL_PKG="kernel-cachyos-lto"
+    KERNEL_PACKAGES="kernel-cachyos-lto kernel-cachyos-lto-core kernel-cachyos-lto-modules kernel-cachyos-lto-devel-matched"
+    KERNEL_BUILD_PKGS="kernel-cachyos-lto-devel-matched kernel-cachyos-lto-devel"
+    ;;
+ml | kernel-ml)
+    KERNEL_TYPE="ml"
+    KERNEL_PKG="kernel-ml-core"
+    # core/modules/modules-core come in as dependencies
+    KERNEL_PACKAGES="kernel-ml kernel-ml-devel kernel-ml-modules-extra"
+    KERNEL_BUILD_PKGS="kernel-ml-devel"
+    KERNEL_REPO_OPT="--enablerepo=elrepo-kernel"
+    KERNEL_VERSION_MARK="*.elrepo.*"
+    ;;
+hyperscale)
+    KERNEL_PKG="kernel-core"
+    KERNEL_PACKAGES="kernel kernel-modules-extra kernel-devel kernel-devel-matched"
+    KERNEL_BUILD_PKGS="kernel-devel kernel-devel-matched"
+    KERNEL_VERSION_MARK="*.hs*"
+    ;;
+stock)
+    KERNEL_REPLACE=false
+    KERNEL_SIGN=false
+    MODULE_SIGN_SCOPE=unsigned
+    KERNEL_PKG="kernel-core"
+    KERNEL_PACKAGES="kernel-devel-matched"
+    KERNEL_BUILD_PKGS="kernel-devel-matched kernel-devel"
+    ;;
+*)
     err "Unsupported kernel type: ${KERNEL_TYPE}"
-    err "This module only supports: cachyos-lto"
+    err "This module supports: cachyos-lto, ml, hyperscale, stock"
     exit 1
-fi
+    ;;
+esac
+
+log "Kernel type: ${KERNEL_TYPE}"
 
 if [ -z "${SIGNING_KEY}" ] && [ -z "${SIGNING_CERT}" ] && [ -z "${MOK_PASSWORD}" ]; then
     log "SecureBoot signing disabled."
@@ -196,14 +256,6 @@ if [ "${SECURE_BOOT}" = "true" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Kernel package resolution (cachyos-lto only)
-# ---------------------------------------------------------------------------
-
-COPR_REPO="bieszczaders/kernel-cachyos-lto"
-KERNEL_PKG="kernel-cachyos-lto"
-KERNEL_PACKAGES="kernel-cachyos-lto kernel-cachyos-lto-core kernel-cachyos-lto-modules kernel-cachyos-lto-devel-matched"
-
-# ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
@@ -228,9 +280,52 @@ restore_kernel_install_hooks() {
     done
 }
 
+# Make the repository that carries the selected kernel available.
+setup_kernel_repo() {
+    case "${KERNEL_TYPE}" in
+    cachyos-lto)
+        log "Enabling COPR repo: ${COPR_REPO}"
+        dnf -y copr enable "${COPR_REPO}"
+        ;;
+    ml)
+        log "Enabling ELRepo (kernel-ml)."
+        # The v2 key is the one EL10's crypto policy accepts.
+        rpm --import https://www.elrepo.org/RPM-GPG-KEY-v2-elrepo.org
+        dnf -y install "https://www.elrepo.org/elrepo-release-${EL_VERSION}.el${EL_VERSION}.elrepo.noarch.rpm"
+        ;;
+    hyperscale)
+        log "Enabling CentOS Hyperscale SIG kernel repo."
+        dnf -y install centos-release-hyperscale-kernel
+        ;;
+    stock)
+        ;;
+    esac
+}
+
+# Drop the repo configuration again once the kernel is installed.
+cleanup_kernel_repo() {
+    case "${KERNEL_TYPE}" in
+    cachyos-lto)
+        rm -f /etc/yum.repos.d/*copr*
+        ;;
+    ml)
+        dnf -y remove --setopt=clean_requirements_on_remove=False elrepo-release || true
+        rm -f /etc/yum.repos.d/elrepo*.repo
+        ;;
+    hyperscale)
+        dnf -y remove --setopt=clean_requirements_on_remove=False centos-release-hyperscale-kernel || true
+        rm -f /etc/yum.repos.d/*hyperscale*.repo
+        ;;
+    stock)
+        ;;
+    esac
+}
+
 sign_kernel() {
     _vmlinuz="/usr/lib/modules/${KERNEL_VERSION}/vmlinuz"
     [ -f "${_vmlinuz}" ] || { err "Kernel image not found: ${_vmlinuz}"; return 1; }
+    # Strip any pre-existing signature so ours is the only one (no-op if unsigned).
+    sbattach --remove "${_vmlinuz}" >/dev/null 2>&1 || true
     _tmp=$(mktemp)
     sbsign --key "${SIGNING_KEY}" --cert "${SIGNING_CERT}" --output "${_tmp}" "${_vmlinuz}"
     if ! sbverify --cert "${SIGNING_CERT}" "${_tmp}"; then
@@ -244,6 +339,13 @@ sign_kernel() {
     sha256sum "${_vmlinuz}" >/tmp/vmlinuz.sha
 }
 
+# True if this module should be signed with our key.
+_needs_signing() {
+    [ "${MODULE_SIGN_SCOPE}" = "all" ] && return 0
+    # "unsigned": leave modules that already carry a signer alone.
+    [ -z "$(modinfo -F signer "$1" 2>/dev/null)" ]
+}
+
 sign_kernel_modules() {
     _module_root="/usr/lib/modules/${KERNEL_VERSION}"
     _sign_file="${_module_root}/build/scripts/sign-file"
@@ -255,6 +357,7 @@ sign_kernel_modules() {
     \) >"${_tmplist}"
     # shellcheck disable=SC2094
     while IFS= read -r _mod; do
+        _needs_signing "${_mod}" || continue
         case "${_mod}" in
         *.ko)
             "${_sign_file}" sha256 "${SIGNING_KEY}" "${SIGNING_CERT}" "${_mod}" \
@@ -333,38 +436,67 @@ dnf config-manager --set-enabled crb
 # Install kernel
 # ---------------------------------------------------------------------------
 
-log "Temporarily disabling kernel install scripts."
-disable_kernel_install_hooks
+if [ "${KERNEL_REPLACE}" = "true" ]; then
+    # Set up the repo first so a bad/unavailable repo fails before we remove
+    # the working kernel.
+    setup_kernel_repo
 
-log "Removing default kernel packages."
-dnf -y remove \
-    kernel \
-    kernel-core \
-    kernel-modules \
-    kernel-modules-core \
-    kernel-modules-extra \
-    kernel-devel \
-    kernel-devel-matched || true
-rm -rf /usr/lib/modules/* || true
+    log "Temporarily disabling kernel install scripts."
+    disable_kernel_install_hooks
 
-log "Resolving kernel source (cachyos-lto via COPR)."
-log "Enabling COPR repo: ${COPR_REPO}"
-dnf -y copr enable "${COPR_REPO}"
+    log "Removing default kernel packages."
+    dnf -y remove \
+        kernel \
+        kernel-core \
+        kernel-modules \
+        kernel-modules-core \
+        kernel-modules-extra \
+        kernel-devel \
+        kernel-devel-matched || true
+    rm -rf /usr/lib/modules/* || true
+else
+    log "Keeping the stock kernel; installing only its matching devel tree."
+fi
+
 log "Installing kernel packages: ${KERNEL_PACKAGES}"
 # Devel packages and akmods are build-only; the kernel itself stays.
-track_build_deps kernel-cachyos-lto-devel-matched kernel-cachyos-lto-devel akmods
 # shellcheck disable=SC2086
-dnf -y install $KERNEL_PACKAGES akmods
+track_build_deps ${KERNEL_BUILD_PKGS} akmods
+# shellcheck disable=SC2086
+dnf -y ${KERNEL_REPO_OPT} install ${KERNEL_PACKAGES} akmods
 
 KERNEL_VERSION=$(rpm -q "${KERNEL_PKG}" --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort -V | tail -n 1) || exit 1
 log "Kernel version: ${KERNEL_VERSION}"
 KERNEL_SOURCE="/usr/src/kernels/${KERNEL_VERSION}"
 
-log "Restoring kernel install scripts."
-restore_kernel_install_hooks
+if [ -n "${KERNEL_VERSION_MARK}" ]; then
+    # shellcheck disable=SC2254
+    case "${KERNEL_VERSION}" in
+    ${KERNEL_VERSION_MARK}) ;;
+    *)
+        err "Expected a ${KERNEL_TYPE} kernel (version matching '${KERNEL_VERSION_MARK}'),"
+        err "but the resulting kernel is ${KERNEL_VERSION}."
+        err "The repo may not carry a kernel for EL${EL_VERSION}, or the stock kernel won on version."
+        exit 1
+        ;;
+    esac
+fi
 
-log "Cleaning up kernel source repo configuration."
-rm -f /etc/yum.repos.d/*copr*
+if [ ! -d "${KERNEL_SOURCE}" ] && [ ! -e "/lib/modules/${KERNEL_VERSION}/build" ]; then
+    err "No kernel devel tree for ${KERNEL_VERSION} (looked in ${KERNEL_SOURCE})."
+    if [ "${KERNEL_TYPE}" = "stock" ]; then
+        err "The repos may no longer carry kernel-devel for the base image's exact kernel."
+    fi
+    exit 1
+fi
+
+if [ "${KERNEL_REPLACE}" = "true" ]; then
+    log "Restoring kernel install scripts."
+    restore_kernel_install_hooks
+
+    log "Cleaning up kernel source repo configuration."
+    cleanup_kernel_repo
+fi
 
 # ---------------------------------------------------------------------------
 # Build v4l2loopback
@@ -430,8 +562,29 @@ rm -f /etc/yum.repos.d/rpmfusion-free*.repo
 if [ "${NVIDIA}" = "true" ]; then
     log "Starting upstream NVIDIA payload build for kernel ${KERNEL_VERSION}."
 
+    if [ ! -d "$KERNEL_SOURCE" ]; then
+        err "Missing kernel source path: $KERNEL_SOURCE"
+        exit 1
+    fi
+
+    # Build the module with the same compiler family the kernel was built with.
+    # kernel-cachyos-lto is a clang/LTO build; the EL-style kernels (ml,
+    # hyperscale, stock) are GCC builds.
+    NVIDIA_CLANG=false
+    if [ -r "${KERNEL_SOURCE}/.config" ]; then
+        if grep -q '^CONFIG_CC_IS_CLANG=y' "${KERNEL_SOURCE}/.config"; then
+            NVIDIA_CLANG=true
+        fi
+    elif [ "${KERNEL_TYPE}" = "cachyos-lto" ]; then
+        NVIDIA_CLANG=true
+    fi
+    log "NVIDIA build toolchain: $([ "${NVIDIA_CLANG}" = "true" ] && echo clang/LLVM || echo gcc)"
+
     # Explicit Mesa drivers ensure software fallback works in VMs
-    NVIDIA_BUILD_TOOLS="perl elfutils-libelf-devel checkpolicy selinux-policy-devel clang llvm lld dkms gcc make"
+    NVIDIA_BUILD_TOOLS="perl elfutils-libelf-devel checkpolicy selinux-policy-devel dkms gcc make"
+    if [ "${NVIDIA_CLANG}" = "true" ]; then
+        NVIDIA_BUILD_TOOLS="${NVIDIA_BUILD_TOOLS} clang llvm lld"
+    fi
     NVIDIA_RUNTIME_DEPS="libglvnd libglvnd-egl libglvnd-gles libglvnd-glx libglvnd-opengl egl-x11 egl-wayland2 egl-gbm xorg-x11-server-Xwayland mesa-dri-drivers mesa-vulkan-drivers mesa-libEGL mesa-libGL"
 
     # Only the compile toolchain is tracked for removal; runtime deps and
@@ -441,11 +594,6 @@ if [ "${NVIDIA}" = "true" ]; then
 
     # shellcheck disable=SC2086
     dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=noscripts --setopt=skip_unavailable=1 $NVIDIA_BUILD_TOOLS $NVIDIA_RUNTIME_DEPS curl tar bzip2 policycoreutils
-
-    if [ ! -d "$KERNEL_SOURCE" ]; then
-        err "Missing kernel source path after installing devel package: $KERNEL_SOURCE"
-        exit 1
-    fi
 
     # Resolve the latest NVIDIA version from the directory listing.
     # latest.txt tracks stable/production; directory scanning picks up
@@ -484,8 +632,14 @@ if [ "${NVIDIA}" = "true" ]; then
     fi
 
     # Compile and Install (omitted --install-libglvnd so distro controls display routing)
-    log "Running NVIDIA installer with Clang/LLVM overrides..."
-    env CC=clang LLVM=1 LD=ld.lld IGNORE_CC_MISMATCH=1 "$NVIDIA_SRC_DIR/nvidia-installer" \
+    if [ "${NVIDIA_CLANG}" = "true" ]; then
+        NVIDIA_ENV="CC=clang LLVM=1 LD=ld.lld IGNORE_CC_MISMATCH=1"
+    else
+        NVIDIA_ENV="IGNORE_CC_MISMATCH=1"
+    fi
+    log "Running NVIDIA installer (${NVIDIA_ENV})..."
+    # shellcheck disable=SC2086
+    env ${NVIDIA_ENV} "$NVIDIA_SRC_DIR/nvidia-installer" \
         --silent \
         --accept-license \
         --no-questions \
@@ -581,10 +735,14 @@ fi
 # ---------------------------------------------------------------------------
 
 if [ "${SECURE_BOOT}" = "true" ]; then
-    log "Signing the kernel."
-    sign_kernel || exit 1
+    if [ "${KERNEL_SIGN}" = "true" ]; then
+        log "Signing the kernel."
+        sign_kernel || exit 1
+    else
+        log "Keeping the vendor-signed kernel image (${KERNEL_TYPE})."
+    fi
 
-    log "Signing kernel modules."
+    log "Signing kernel modules (scope: ${MODULE_SIGN_SCOPE})."
     sign_kernel_modules || exit 1
 
     log "Creating MOK enroll unit."
@@ -625,7 +783,15 @@ fi
 # Final integrity checks
 # ---------------------------------------------------------------------------
 
-if [ "${SECURE_BOOT}" = "true" ]; then
+# bootc expects exactly one kernel under /usr/lib/modules.
+_kdirs=$(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d | wc -l)
+if [ "${_kdirs}" -ne 1 ] || [ ! -d "/usr/lib/modules/${KERNEL_VERSION}" ]; then
+    err "Expected exactly one kernel directory (${KERNEL_VERSION}) under /usr/lib/modules, found:"
+    find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d >&2
+    exit 1
+fi
+
+if [ "${SECURE_BOOT}" = "true" ] && [ "${KERNEL_SIGN}" = "true" ]; then
     sha256sum -c /tmp/vmlinuz.sha || { err "Kernel modified after signing."; exit 1; }
     rm -f /tmp/vmlinuz.sha
     log "Integrity check passed."
@@ -642,3 +808,4 @@ if [ "${NVIDIA}" = "true" ]; then
 fi
 
 log "Custom kernel installation complete."
+# Build-time dependencies are removed and DNF caches cleaned by the EXIT trap.
