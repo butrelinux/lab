@@ -1,8 +1,6 @@
 name: bluebuild
 on:
-  schedule:
-    - cron:
-        "00 00 * * 1,3,5" 
+
   workflow_dispatch: # allow manually triggering builds
 
 concurrency:
