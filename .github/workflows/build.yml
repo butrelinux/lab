@@ -1,8 +1,6 @@
 name: bluebuild
 on:
-  schedule:
-    - cron:
-        "00 00 * * 1,3,5" 
+
   workflow_dispatch: # allow manually triggering builds
 
 concurrency:
@@ -20,7 +18,15 @@ jobs:
       fail-fast: false 
       matrix:
         recipe:
-          - lab.yml
+          - lto.yml
+          - lto-nvidia.yml
+          - lts.yml
+          - lts-nvidia.yml
+          - ml.yml
+          - ml-nvidia.yml
+          - hyperscale.yml
+          - hyperscale-nvidia.yml
+          
     steps:
       - name: Build Custom Image
         uses: blue-build/github-action@v1.13

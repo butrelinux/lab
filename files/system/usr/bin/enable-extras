@@ -1,0 +1,609 @@
+#!/usr/bin/env bash
+#
+# butrelinux extras — state-aware Distrobox application environment
+#
+# State machine:
+#
+#   Container    Marker    Action
+#   ---------    ------    ------
+#   missing      missing   Fresh install (build image, create box, mark)
+#   exists       missing   Prompt to adopt; if yes, mark + inject
+#   missing      exists    Stale state; recreate (build, create, mark)
+#   exists       exists    Managed; inject packages into existing box
+#
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly CONTAINER_NAME="butrelinux-extras"
+readonly BASE_IMAGE="quay.io/fedora/fedora-minimal:44"
+readonly IMAGE_INFO="/usr/share/ublue-os/image-info.json"
+readonly MARKER_DIR="${HOME}/.local/share/butrelinux-extras"
+readonly MARKER_FILE="${MARKER_DIR}/managed"
+
+# --------------------------------------------------------------------------------
+# Package catalog
+#
+#   tag                 description                                       default
+# --------------------------------------------------------------------------------
+
+PACKAGE_ITEMS=(
+    steam               "Steam                                          " OFF
+    mangohud            "MangoHud                                       " OFF
+    gamemode            "GameMode                                       " OFF
+    vkBasalt            "vkBasalt                                       " OFF
+    vulkan-tools        "Vulkan tools                                   " OFF
+
+    codium              "VSCodium                                       " OFF
+    neovim              "Neovim                                         " OFF
+    desktop-plus-bin    "Github Desktop Plus                            " OFF
+
+    vesktop             "Vesktop                                        " OFF
+    fluxer              "Fluxer                                         " OFF
+    signal-desktop      "Signal Desktop                                 " OFF
+    nheko               "Nheko                                          " OFF
+
+    obs-studio          "OBS Studio                                     " OFF
+    vlc                 "VLC                                            " OFF
+    krita               "Krita                                          " OFF
+    gimp                "GIMP                                           " OFF
+    inkscape            "Inkscape                                       " OFF
+    blender             "Blender                                        " OFF
+    kdenlive            "Kdenlive                                       " OFF
+
+    firefox             "Firefox                                        " OFF
+    firefox-langpacks   "Firefox language packs                         " OFF
+    thunderbird         "Thunderbird                                    " OFF
+    chromium            "Chromium                                       " OFF
+    qbittorrent         "qBitTorrent                                    " OFF
+    filezilla           "FileZilla                                      " OFF
+
+
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+cleanup() {
+    if [[ -n "${BUILD_DIR:-}" && -d "$BUILD_DIR" ]]; then
+        rm -rf "$BUILD_DIR"
+    fi
+}
+
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# State-machine helpers
+# ---------------------------------------------------------------------------
+
+marker_exists() {
+    [[ -f "$MARKER_FILE" ]]
+}
+
+container_exists() {
+    podman container exists "$CONTAINER_NAME" 2>/dev/null
+}
+
+create_marker() {
+    mkdir -p "$MARKER_DIR"
+    touch "$MARKER_FILE"
+}
+
+remove_marker() {
+    [[ -f "$MARKER_FILE" ]] && rm -f "$MARKER_FILE"
+}
+
+determine_state() {
+    local has_container=0
+    local has_marker=0
+
+    if container_exists; then
+        has_container=1
+    fi
+
+    if marker_exists; then
+        has_marker=1
+    fi
+
+    if ((has_container == 0 && has_marker == 0)); then
+        echo "fresh"
+    elif ((has_container == 1 && has_marker == 0)); then
+        echo "adopt"
+    elif ((has_container == 0 && has_marker == 1)); then
+        echo "stale"
+    else
+        echo "managed"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Beta warning
+# ---------------------------------------------------------------------------
+
+confirm_beta() {
+    while true; do
+        read -r -p \
+            "This feature is currently in beta, would you like to continue? (y/n): " \
+            yn
+
+        case "$yn" in
+            [Yy])
+                echo "Setting up butrelinux extras"
+                return
+                ;;
+            [Nn])
+                echo "Operation canceled by user"
+                exit 0
+                ;;
+            *)
+                echo "Invalid response. Please enter y or n"
+                ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Adoption prompt
+# ---------------------------------------------------------------------------
+
+prompt_adoption() {
+    while true; do
+        read -r -p \
+            "An unmanaged Distrobox container named '$CONTAINER_NAME' already exists. Adopt it for butrelinux extras management? (y/n): " \
+            yn
+
+        case "$yn" in
+            [Yy])
+                create_marker
+                echo "Container adopted for butrelinux extras management."
+                return 0
+                ;;
+            [Nn])
+                echo "Operation canceled by user"
+                exit 0
+                ;;
+            *)
+                echo "Invalid response. Please enter y or n"
+                ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Package selection
+# ---------------------------------------------------------------------------
+
+select_packages() {
+    local selections
+
+    if ! selections="$(
+        whiptail \
+            --title "butrelinux extras" \
+            --checklist \
+            "Select the applications to install:" \
+            22 78 15 \
+            "${PACKAGE_ITEMS[@]}" \
+            3>&1 1>&2 2>&3
+    )"; then
+        echo "Operation canceled by user"
+        exit 0
+    fi
+
+    # whiptail returns:
+    #
+    # "steam" "firefox" "neovim"
+    #
+    # Parse that into a normal Bash array.
+    local old_ifs="$IFS"
+    IFS=' '
+    read -r -a packages <<< "$selections"
+    IFS="$old_ifs"
+
+    # Remove whiptail's quotes.
+    packages=("${packages[@]//\"/}")
+
+    if ((${#packages[@]} == 0)); then
+        whiptail \
+            --title "Nothing selected" \
+            --msgbox "No applications were selected." \
+            8 50
+
+        exit 0
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Image naming
+# ---------------------------------------------------------------------------
+
+make_image_name() {
+    local package_hash
+
+    package_hash="$(
+        printf '%s\n' "${packages[@]}" |
+            sort -u |
+            sha256sum |
+            cut -c1-12
+    )"
+
+    IMAGE="localhost/butrelinux-extras:${package_hash}"
+}
+
+# ---------------------------------------------------------------------------
+# Containerfile generation
+# ---------------------------------------------------------------------------
+
+generate_containerfile() {
+    BUILD_DIR="$(mktemp -d)"
+
+    local package_block
+    package_block="$(
+        printf '        %s \\\n' "${packages[@]}" |
+            sed '$ s/ \\$//'
+    )"
+
+    cat > "$BUILD_DIR/Containerfile" <<EOF
+FROM ${BASE_IMAGE}
+
+# dnf5 is used for package installation because the final builder
+# needs normal Fedora repository/package semantics.
+RUN microdnf install -y dnf5 dnf5-plugins sudo bash && \\
+    microdnf clean all
+
+# Terra provides packages such as VSCodium and several of the
+# desktop applications we want to expose.
+RUN dnf5 install -y \\
+        --nogpgcheck \\
+        --repofrompath=terra,https://repos.fyralabs.com/terra\\\$releasever \\
+        terra-release \\
+        terra-gpg-keys
+
+RUN dnf5 makecache
+
+# Application payload.
+#
+# Weak dependencies are deliberately disabled. This container is an
+# application environment, not a complete Fedora workstation.
+RUN dnf5 install -y \\
+        --setopt=install_weak_deps=False \\
+${package_block}
+
+RUN dnf5 clean all && \\
+    rm -rf /var/cache/dnf
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+
+build_image() {
+    echo
+    echo "Building:"
+    echo "  $IMAGE"
+    echo
+    echo "Packages:"
+    printf '  %s\n' "${packages[@]}"
+    echo
+
+    podman build \
+        --tag "$IMAGE" \
+        "$BUILD_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# NVIDIA detection
+# ---------------------------------------------------------------------------
+
+nvidia_enabled() {
+    [[ -r "$IMAGE_INFO" ]] || return 1
+
+    jq -e -r \
+        '.["image-name"] // empty | test("nvidia"; "i")' \
+        "$IMAGE_INFO" \
+        >/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Distrobox
+# ---------------------------------------------------------------------------
+
+create_distrobox() {
+    if container_exists; then
+        die "Distrobox container '$CONTAINER_NAME' already exists"
+    fi
+
+    local distrobox_args=(
+        create
+        --name "$CONTAINER_NAME"
+        --image "$IMAGE"
+        --yes
+        --no-entry
+    )
+
+    if nvidia_enabled; then
+        echo "NVIDIA host detected; enabling Distrobox NVIDIA integration"
+        distrobox_args+=(--nvidia)
+    fi
+
+    distrobox "${distrobox_args[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# Desktop application export
+# ---------------------------------------------------------------------------
+
+export_applications() {
+    # shellcheck disable=SC2016
+    distrobox enter "$CONTAINER_NAME" --no-tty -- bash -c '
+        set -Eeuo pipefail
+        shopt -s nullglob
+
+        for app in \
+            /usr/share/applications/*.desktop \
+            "$HOME"/.local/share/applications/*.desktop
+        do
+            [[ -e "$app" ]] || continue
+            distrobox-export --app "$app"
+        done
+    '
+}
+
+# Export only the .desktop files belonging to specific packages.
+# Used during managed/adopt injection to avoid the full export loop.
+export_new_applications() {
+    if (($# == 0)); then
+        return 0
+    fi
+
+    echo
+    echo "Exporting desktop applications for new packages..."
+
+    local pkg_list
+    pkg_list=$(printf '%s\n' "$@")
+
+    local desktop_files
+    # shellcheck disable=SC2016
+    desktop_files=$(distrobox enter "$CONTAINER_NAME" --no-tty -- bash -c '
+        set -Eeuo pipefail
+        while IFS= read -r pkg; do
+            [[ -n "$pkg" ]] || continue
+            rpm -ql "$pkg" 2>/dev/null | grep "\.desktop$" || true
+        done
+    ' <<< "$pkg_list")
+
+    if [[ -z "$desktop_files" ]]; then
+        echo "No new desktop applications to export."
+        return 0
+    fi
+
+    while IFS= read -r app; do
+        [[ -n "$app" ]] || continue
+        echo "  Exporting: $app"
+        distrobox enter "$CONTAINER_NAME" --no-tty -- \
+            distrobox-export --app "$app"
+    done <<< "$desktop_files"
+}
+
+# ---------------------------------------------------------------------------
+# Package injection (managed / adopt paths)
+# ---------------------------------------------------------------------------
+
+inject_packages() {
+    if ((${#packages[@]} == 0)); then
+        echo "No packages selected for installation."
+        return 0
+    fi
+
+    echo
+    echo "Checking existing '$CONTAINER_NAME' container for selected packages..."
+
+    local pkg_list
+    pkg_list=$(printf '%s\n' "${packages[@]}")
+
+    # Query the container for which selected packages are NOT installed.
+    local missing
+    # shellcheck disable=SC2016
+    missing=$(distrobox enter "$CONTAINER_NAME" --no-tty -- bash -c '
+        set -Eeuo pipefail
+        while IFS= read -r pkg; do
+            rpm -q "$pkg" &>/dev/null || printf "%s\n" "$pkg"
+        done
+    ' <<< "$pkg_list")
+
+    local missing_pkgs=()
+    if [[ -n "$missing" ]]; then
+        mapfile -t missing_pkgs <<< "$missing"
+    fi
+
+    # Compute which packages are already present.
+    local skipped=()
+    for pkg in "${packages[@]}"; do
+        local is_missing=0
+        for mp in "${missing_pkgs[@]}"; do
+            if [[ "$pkg" == "$mp" ]]; then
+                is_missing=1
+                break
+            fi
+        done
+        if ((is_missing == 0)); then
+            skipped+=("$pkg")
+        fi
+    done
+
+    if ((${#skipped[@]} > 0)); then
+        echo
+        echo "Already installed (skipping):"
+        printf '  %s\n' "${skipped[@]}"
+    fi
+
+    if ((${#missing_pkgs[@]} == 0)); then
+        echo
+        echo "All selected packages are already installed."
+        return 0
+    fi
+
+    echo
+    echo "Installing into existing '$CONTAINER_NAME' container:"
+    printf '  %s\n' "${missing_pkgs[@]}"
+    echo
+
+    # For adopted containers that may not have Terra configured yet,
+    # attempt an idempotent setup.  This is a no-op on managed containers.
+    # shellcheck disable=SC2016
+    distrobox enter "$CONTAINER_NAME" --no-tty -- bash -c '
+        set -Eeuo pipefail
+        if command -v dnf5 &>/dev/null && ! rpm -q terra-release &>/dev/null; then
+            dnf5 install -y --nogpgcheck \
+                --repofrompath=terra,https://repos.fyralabs.com/terra$releasever \
+                terra-release terra-gpg-keys
+            dnf5 makecache
+        fi
+    ' || echo "Warning: Could not ensure Terra repositories in container."
+
+    local install_list
+    install_list="${missing_pkgs[*]}"
+    # shellcheck disable=SC2086
+    distrobox enter "$CONTAINER_NAME" --no-tty -- \
+        sudo dnf5 install -y \
+            --setopt=install_weak_deps=False \
+            $install_list
+
+    # Export only the .desktop files that belong to the newly installed
+    # packages.  This avoids re-running the full export loop.
+    export_new_applications "${missing_pkgs[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# Host integration
+# ---------------------------------------------------------------------------
+
+configure_host_integration() {
+    distrobox enter "$CONTAINER_NAME" --no-tty -- \
+        sudo ln -sf \
+            /usr/bin/distrobox-host-exec \
+            /usr/local/bin/xdg-open
+
+    distrobox enter "$CONTAINER_NAME" --no-tty -- \
+        sudo ln -sf \
+            /usr/bin/distrobox-host-exec \
+            /usr/local/bin/flatpak
+
+    distrobox enter "$CONTAINER_NAME" --no-tty -- \
+        sudo sh -c 'cat > /etc/profile.d/cnfhandle.sh' <<'EOF'
+command_not_found_handle() {
+    # Don't run if not in a container.
+    if [ ! -e /run/.containerenv ] && [ ! -e /.dockerenv ]; then
+        return 127
+    fi
+
+    distrobox-host-exec "${@}"
+}
+
+if [ -n "${ZSH_VERSION-}" ]; then
+    command_not_found_handler() {
+        command_not_found_handle "$@"
+    }
+fi
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+show_summary() {
+    echo
+    echo "butrelinux extras is ready."
+    echo
+    echo "  Image:     $IMAGE"
+    echo "  Distrobox: $CONTAINER_NAME"
+    echo
+    echo "Installed applications:"
+    printf '  - %s\n' "${packages[@]}"
+    echo
+}
+
+show_summary_managed() {
+    echo
+    echo "butrelinux extras packages installed into existing container."
+    echo
+    echo "  Distrobox: $CONTAINER_NAME"
+    echo
+    echo "Installed applications:"
+    printf '  - %s\n' "${packages[@]}"
+    echo
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+main() {
+    command -v whiptail >/dev/null ||
+        die "whiptail is required"
+
+    command -v podman >/dev/null ||
+        die "podman is required"
+
+    command -v distrobox >/dev/null ||
+        die "distrobox is required"
+
+    command -v jq >/dev/null ||
+        die "jq is required"
+
+    confirm_beta
+
+    local state
+    state="$(determine_state)"
+
+    case "$state" in
+        fresh)
+            select_packages
+            make_image_name
+            generate_containerfile
+            build_image
+            create_distrobox
+            create_marker
+            export_applications
+            configure_host_integration
+            show_summary
+            ;;
+        adopt)
+            prompt_adoption
+            select_packages
+            inject_packages
+            export_applications
+            configure_host_integration
+            show_summary_managed
+            ;;
+        stale)
+            echo "Managed state found but container is missing. Recreating..."
+            select_packages
+            make_image_name
+            generate_containerfile
+            build_image
+            create_distrobox
+            create_marker
+            export_applications
+            configure_host_integration
+            show_summary
+            ;;
+        managed)
+            select_packages
+            inject_packages
+            show_summary_managed
+            ;;
+        *)
+            die "Unknown state: $state"
+            ;;
+    esac
+}
+
+main "$@"
