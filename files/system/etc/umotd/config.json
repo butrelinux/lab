@@ -1,0 +1,44 @@
+{
+  "commands": [
+    {
+      "cmd": "umotd toggle",
+      "desc": "motd_toggle"
+    },
+    {
+      "cmd": "brew help",
+      "desc": "cli_pkg"
+    }
+  ],
+  "links": [
+    {
+      "name": "Github",
+      "url": "https://github.com/butrejp/butrelinux"
+    },
+    {
+      "name": "Docs",
+      "url": "https://github.com/butrejp/butrelinux/wiki"
+    },
+    {
+      "name": "Sourceforge",
+      "url": "https://butrelinux.sourceforge.io/"
+    },
+    {
+      "name": "Issues",
+      "url": "https://github.com/butrejp/butrelinux/issues"
+    }
+  ],
+  "prefix": "󱍢 ",
+  "tips": [
+            "Develop with devcontainers! Use `devcontainer.json` files in your projects for isolated, reproducible environments",
+            "Switch shells safely: change your shell in Terminal settings instead of system-wide",
+            "Enable local layering with `givemethekeys`",
+            "Try `enable-extras` [BETA] to set up distrobox with steam, vesktop, OBS, and more",
+            "Give [Kontainer](appstream://io.github.denysmb.kontainer) a try for containerized development with GUI support",
+            "Install [fluxer](appstream://app.fluxer.fluxer) to join the brand new [butrelinux community](https://fluxer.gg/XT3wcqUG)",
+            "Need a discord client?  try [vesktop](appstream://dev.vencord.vesktop)",
+            "Check out the [butrelinux wiki](https://github.com/butrejp/butrelinux/wiki) for more information and tips",
+            "Don't support butrelinux, support the Kawaguchi O'Connor Initiative instead: [KOI](https://koinitiative.org/)"
+          ],
+  "tips-presets": ["kde"],
+  "use-accent-color": true
+}

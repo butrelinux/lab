@@ -1,0 +1,22 @@
+---
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+name: lto-nvidia
+description: butrelinux lto with nvidia support
+
+base-image: quay.io/centos-bootc/centos-bootc
+image-version: c10s
+modules:
+  - from-file: common/common.yml
+  - from-file: common/nvidia.yml
+
+  - type: custom-kernel
+    source: local
+    kernel: cachyos-lto
+    initramfs: true
+    nvidia: true
+
+  - type: image-info
+    source: local
+    variant: lto-nvidia  
+  
+  - from-file: common/end.yml

@@ -9,4 +9,3 @@ example: |
   selinux: true
   extra-conf: |
     trusted-users = root @wheel
-    

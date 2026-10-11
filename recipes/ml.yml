@@ -1,22 +1,22 @@
 ---
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
-name: lab
-description: This is where I will be testing new butrelinux features
+name: ml
+description: butrelinux ml
 
 base-image: quay.io/centos-bootc/centos-bootc
 image-version: c10s
 modules:
-  - from-file: common/bootstrap.yml
-  - from-file: common/dnf.yml
+  - from-file: common/common.yml
+
 
   - type: custom-kernel
     source: local
-    kernel: cachyos-lto
+    kernel: ml
     initramfs: true
     nvidia: false
 
   - type: image-info
     source: local
-    variant: lab  
+    variant: ml
   
   - from-file: common/end.yml

@@ -214,7 +214,10 @@ stock)
     KERNEL_SIGN=false
     MODULE_SIGN_SCOPE=unsigned
     KERNEL_PKG="kernel-core"
-    KERNEL_PACKAGES="kernel-devel-matched"
+    # KERNEL_PACKAGES is set below to the devel package for the EXACT installed
+    # kernel version (kernel-devel-matched would let dnf downgrade the kernel
+    # to whatever version the repos happen to carry).
+    KERNEL_PACKAGES=""
     KERNEL_BUILD_PKGS="kernel-devel-matched kernel-devel"
     ;;
 *)
@@ -278,6 +281,89 @@ restore_kernel_install_hooks() {
     do
         [ -f "${_f}.bak" ] && mv -f "${_f}.bak" "${_f}"
     done
+}
+
+# True if the kernel headers declare the two-argument v4l2_fh_add()/v4l2_fh_del()
+# (a newer API that some EL kernels backport) while v4l2loopback's compat shim
+# still assumes the one-argument form for this kernel version.
+v4l2loopback_needs_compat_patch() {
+    _hdr="${KERNEL_SOURCE}/include/media/v4l2-fh.h"
+    [ -f "${_hdr}" ] || return 1
+    grep -Eq 'v4l2_fh_add\(struct v4l2_fh \*fh, struct file \*filp\)' "${_hdr}"
+}
+
+# Remove the one-argument compat defines from a v4l2loopback source tree.
+# Returns 1 if the source file is missing, 2 if the defines are not present.
+_patch_v4l2loopback_src() {
+    _f="$1/v4l2loopback.c"
+    _re='^#[[:space:]]*define[[:space:]]+v4l2_fh_(add|del)\(fh,[[:space:]]*filp\)[[:space:]]+v4l2_fh_(add|del)\(fh\)[[:space:]]*$'
+    [ -f "${_f}" ] || return 1
+    grep -Eq "${_re}" "${_f}" || return 2
+    sed -i -E "/${_re}/d" "${_f}"
+}
+
+# Build v4l2loopback directly from the akmod's source RPM with the compat
+# defines removed, and install it for the running (stock) kernel.
+build_v4l2loopback_patched() {
+    log "Kernel headers use the two-argument v4l2_fh_add/del API; building v4l2loopback with a compat patch."
+
+    _srpm=$(readlink -f /usr/src/akmods/v4l2loopback-kmod.latest 2>/dev/null) || true
+    if [ ! -f "${_srpm:-}" ]; then
+        _srpm=$(ls /usr/src/akmods/v4l2loopback-kmod-*.src.rpm 2>/dev/null | sort -V | tail -n 1) || true
+    fi
+    [ -f "${_srpm:-}" ] || { err "v4l2loopback akmod source RPM not found under /usr/src/akmods"; return 1; }
+
+    for _tool in cpio gcc make; do
+        if ! command -v "${_tool}" >/dev/null 2>&1; then
+            track_build_deps "${_tool}"
+            dnf -y install "${_tool}"
+        fi
+    done
+
+    _wd=$(mktemp -d)
+    ( cd "${_wd}" && rpm2cpio "${_srpm}" | cpio -idm --quiet ) \
+        || { err "Failed to unpack ${_srpm}"; rm -rf "${_wd}"; return 1; }
+
+    _tb=$(find "${_wd}" -maxdepth 1 -name 'v4l2loopback-*.tar.*' | head -n 1)
+    [ -n "${_tb}" ] || { err "v4l2loopback source tarball not found in ${_srpm}"; rm -rf "${_wd}"; return 1; }
+
+    mkdir "${_wd}/src"
+    tar -xf "${_tb}" -C "${_wd}/src" \
+        || { err "Failed to extract ${_tb}"; rm -rf "${_wd}"; return 1; }
+    _csrc=$(find "${_wd}/src" -name v4l2loopback.c | head -n 1)
+    [ -n "${_csrc}" ] || { err "v4l2loopback.c not found in the source tarball"; rm -rf "${_wd}"; return 1; }
+    _src=$(dirname "${_csrc}")
+
+    _rc=0
+    _patch_v4l2loopback_src "${_src}" || _rc=$?
+    if [ "${_rc}" -ne 0 ]; then
+        err "Could not apply the compat patch (code ${_rc}): the expected one-argument v4l2_fh_add/del defines were not found."
+        rm -rf "${_wd}"
+        return 1
+    fi
+    log "Removed the one-argument v4l2_fh_add/del compat defines."
+
+    log "Compiling v4l2loopback against ${KERNEL_SOURCE}"
+    make -C "${KERNEL_SOURCE}" M="${_src}" modules \
+        || { err "Patched v4l2loopback build failed"; rm -rf "${_wd}"; return 1; }
+    _ko="${_src}/v4l2loopback.ko"
+    [ -f "${_ko}" ] || { err "v4l2loopback.ko not produced"; rm -rf "${_wd}"; return 1; }
+
+    strip --strip-debug "${_ko}" 2>/dev/null || true
+    _dest="/usr/lib/modules/${KERNEL_VERSION}/extra/v4l2loopback"
+    install -d -m 0755 "${_dest}"
+    install -m 0644 "${_ko}" "${_dest}/v4l2loopback.ko"
+    xz --check=crc32 --lzma2=dict=512KiB -f "${_dest}/v4l2loopback.ko"
+    depmod -a "${KERNEL_VERSION}"
+
+    # The akmod pulled in the userspace v4l2loopback package as a dependency;
+    # keep it (no kmod RPM exists in this path to hold it in place).
+    dnf -y mark install v4l2loopback >/dev/null 2>&1 || true
+
+    rm -rf "${_wd}"
+    find "${_dest}" -name 'v4l2loopback.ko*' | grep -q . \
+        || { err "v4l2loopback module missing after install"; return 1; }
+    log "Installed patched v4l2loopback to ${_dest}"
 }
 
 # Make the repository that carries the selected kernel available.
@@ -456,6 +542,19 @@ if [ "${KERNEL_REPLACE}" = "true" ]; then
     rm -rf /usr/lib/modules/* || true
 else
     log "Keeping the stock kernel; installing only its matching devel tree."
+    # No kernel is installed here, but keep the hooks quiet in case a scriptlet fires.
+    disable_kernel_install_hooks
+    STOCK_VERSION=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}\n' | sort -V | tail -n 1) || exit 1
+    log "Installed stock kernel: ${STOCK_VERSION}"
+    # The repos can lag the base image. Installing a devel package for a
+    # different version would make dnf up/downgrade the kernel to match, so
+    # require the exact version and fail early instead.
+    if ! dnf -q repoquery --available "kernel-devel-${STOCK_VERSION}" 2>/dev/null | grep -q "kernel-devel-.*${STOCK_VERSION}"; then
+        err "No kernel-devel-${STOCK_VERSION} in the enabled repos (they may lag the base image)."
+        err "Rebuild later, use a fresher mirror, or pick a non-stock kernel."
+        exit 1
+    fi
+    KERNEL_PACKAGES="kernel-devel-${STOCK_VERSION}"
 fi
 
 log "Installing kernel packages: ${KERNEL_PACKAGES}"
@@ -467,6 +566,11 @@ dnf -y ${KERNEL_REPO_OPT} install ${KERNEL_PACKAGES} akmods
 
 KERNEL_VERSION=$(rpm -q "${KERNEL_PKG}" --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort -V | tail -n 1) || exit 1
 log "Kernel version: ${KERNEL_VERSION}"
+
+if [ "${KERNEL_TYPE}" = "stock" ] && [ "${KERNEL_VERSION}" != "${STOCK_VERSION}.$(rpm -E %_arch)" ]; then
+    err "The stock kernel changed during install (${STOCK_VERSION} -> ${KERNEL_VERSION})."
+    exit 1
+fi
 KERNEL_SOURCE="/usr/src/kernels/${KERNEL_VERSION}"
 
 if [ -n "${KERNEL_VERSION_MARK}" ]; then
@@ -490,13 +594,11 @@ if [ ! -d "${KERNEL_SOURCE}" ] && [ ! -e "/lib/modules/${KERNEL_VERSION}/build" 
     exit 1
 fi
 
-if [ "${KERNEL_REPLACE}" = "true" ]; then
-    log "Restoring kernel install scripts."
-    restore_kernel_install_hooks
+log "Restoring kernel install scripts."
+restore_kernel_install_hooks
 
-    log "Cleaning up kernel source repo configuration."
-    cleanup_kernel_repo
-fi
+log "Cleaning up kernel source repo configuration."
+cleanup_kernel_repo
 
 # ---------------------------------------------------------------------------
 # Build v4l2loopback
@@ -513,41 +615,46 @@ track_build_deps akmod-v4l2loopback
 dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=noscripts \
     akmod-v4l2loopback
 
-# Some kernels intentionally do not provide kernel-uname-r, causing akmods'
-# DNF install step to fail even though the build itself succeeds. We ignore
-# that error and handle installation manually.
-akmods --force --verbose --kernels "${KERNEL_VERSION}" --kmod v4l2loopback || true
-
-_kmod_rpm=$(find /var/cache/akmods/v4l2loopback -maxdepth 1 \
-    -name "kmod-v4l2loopback-*.rpm" ! -name "*failed*" 2>/dev/null | head -n1)
-
-if [ -n "$_kmod_rpm" ] && [ -f "$_kmod_rpm" ]; then
-    _rpm_name=$(rpm -qp --queryformat '%{NAME}\n' "$_kmod_rpm" 2>/dev/null)
-    if [ -n "$_rpm_name" ] && ! rpm -q "$_rpm_name" >/dev/null 2>&1; then
-        log "Installing built kmod RPM (bypassing kernel-uname-r dependency): ${_kmod_rpm}"
-        rpm -ivh --nodeps "$_kmod_rpm"
-    else
-        log "kmod RPM already installed, skipping manual install."
-    fi
-    depmod -a "${KERNEL_VERSION}"
-    rm -f /var/cache/akmods/v4l2loopback/*.failed.log
+if [ "${KERNEL_TYPE}" = "stock" ] && v4l2loopback_needs_compat_patch; then
+    # Stock kernel whose headers are newer than the module expects.
+    build_v4l2loopback_patched || exit 1
 else
-    # No cached RPM — determine if it was a real build failure
-    _fail_found=false
-    for _f in /var/cache/akmods/v4l2loopback/*-for-"${KERNEL_VERSION}".failed.log; do
-        [ -f "${_f}" ] && _fail_found=true && break
-    done
-    if [ "${_fail_found}" = "true" ]; then
-        err "v4l2loopback akmod build failed:"
+    # Some kernels intentionally do not provide kernel-uname-r, causing akmods'
+    # DNF install step to fail even though the build itself succeeds. We ignore
+    # that error and handle installation manually.
+    akmods --force --verbose --kernels "${KERNEL_VERSION}" --kmod v4l2loopback || true
+
+    _kmod_rpm=$(find /var/cache/akmods/v4l2loopback -maxdepth 1 \
+        -name "kmod-v4l2loopback-*.rpm" ! -name "*failed*" 2>/dev/null | head -n1)
+
+    if [ -n "$_kmod_rpm" ] && [ -f "$_kmod_rpm" ]; then
+        _rpm_name=$(rpm -qp --queryformat '%{NAME}\n' "$_kmod_rpm" 2>/dev/null)
+        if [ -n "$_rpm_name" ] && ! rpm -q "$_rpm_name" >/dev/null 2>&1; then
+            log "Installing built kmod RPM (bypassing kernel-uname-r dependency): ${_kmod_rpm}"
+            rpm -ivh --nodeps "$_kmod_rpm"
+        else
+            log "kmod RPM already installed, skipping manual install."
+        fi
+        depmod -a "${KERNEL_VERSION}"
+        rm -f /var/cache/akmods/v4l2loopback/*.failed.log
+    else
+        # No cached RPM — determine if it was a real build failure
+        _fail_found=false
         for _f in /var/cache/akmods/v4l2loopback/*-for-"${KERNEL_VERSION}".failed.log; do
-            [ -f "${_f}" ] && cat "${_f}"
+            [ -f "${_f}" ] && _fail_found=true && break
         done
-        exit 1
-    fi
-    # akmods may have succeeded and cleaned up the RPM itself. Verify the module exists.
-    if ! find "/lib/modules/${KERNEL_VERSION}/extra/v4l2loopback/" -name "v4l2loopback.ko*" | grep -q .; then
-        err "v4l2loopback kmod not found after build"
-        exit 1
+        if [ "${_fail_found}" = "true" ]; then
+            err "v4l2loopback akmod build failed:"
+            for _f in /var/cache/akmods/v4l2loopback/*-for-"${KERNEL_VERSION}".failed.log; do
+                [ -f "${_f}" ] && cat "${_f}"
+            done
+            exit 1
+        fi
+        # akmods may have succeeded and cleaned up the RPM itself. Verify the module exists.
+        if ! find "/lib/modules/${KERNEL_VERSION}/extra/v4l2loopback/" -name "v4l2loopback.ko*" | grep -q .; then
+            err "v4l2loopback kmod not found after build"
+            exit 1
+        fi
     fi
 fi
 
