@@ -283,6 +283,105 @@ restore_kernel_install_hooks() {
     done
 }
 
+# True if the kernel headers declare the two-argument v4l2_fh_add()/v4l2_fh_del()
+# (a newer API that some EL kernels backport) while v4l2loopback's compat shim
+# still assumes the one-argument form for this kernel version.
+v4l2loopback_needs_compat_patch() {
+    _hdr="${KERNEL_SOURCE}/include/media/v4l2-fh.h"
+    [ -f "${_hdr}" ] || return 1
+    grep -Eq 'v4l2_fh_add\(struct v4l2_fh \*fh, struct file \*filp\)' "${_hdr}"
+}
+
+# Remove the one-argument compat defines from a v4l2loopback source tree.
+# Returns 1 if the source file is missing, 2 if the defines are not present.
+_patch_v4l2loopback_src() {
+    _f="$1/v4l2loopback.c"
+    _re='^#[[:space:]]*define[[:space:]]+v4l2_fh_(add|del)\(fh,[[:space:]]*filp\)[[:space:]]+v4l2_fh_(add|del)\(fh\)[[:space:]]*$'
+    [ -f "${_f}" ] || return 1
+    grep -Eq "${_re}" "${_f}" || return 2
+    sed -i -E "/${_re}/d" "${_f}"
+}
+
+# Build v4l2loopback directly from the akmod's source RPM with the compat
+# defines removed, and install it for the running (stock) kernel.
+build_v4l2loopback_patched() {
+    log "Kernel headers use the two-argument v4l2_fh_add/del API; building v4l2loopback with a compat patch."
+
+    _srpm=$(readlink -f /usr/src/akmods/v4l2loopback-kmod.latest 2>/dev/null) || true
+    if [ ! -f "${_srpm:-}" ]; then
+        _srpm=$(ls /usr/src/akmods/v4l2loopback-kmod-*.src.rpm 2>/dev/null | sort -V | tail -n 1) || true
+    fi
+    [ -f "${_srpm:-}" ] || { err "v4l2loopback akmod source RPM not found under /usr/src/akmods"; return 1; }
+
+    for _tool in cpio gcc make; do
+        if ! command -v "${_tool}" >/dev/null 2>&1; then
+            track_build_deps "${_tool}"
+            dnf -y install "${_tool}"
+        fi
+    done
+
+    _wd=$(mktemp -d)
+    ( cd "${_wd}" && rpm2cpio "${_srpm}" | cpio -idm --quiet ) \
+        || { err "Failed to unpack ${_srpm}"; rm -rf "${_wd}"; return 1; }
+
+    _tb=$(find "${_wd}" -maxdepth 1 -name 'v4l2loopback-*.tar.*' | head -n 1)
+    [ -n "${_tb}" ] || { err "v4l2loopback source tarball not found in ${_srpm}"; rm -rf "${_wd}"; return 1; }
+
+    mkdir "${_wd}/src"
+    tar -xf "${_tb}" -C "${_wd}/src" \
+        || { err "Failed to extract ${_tb}"; rm -rf "${_wd}"; return 1; }
+    _csrc=$(find "${_wd}/src" -name v4l2loopback.c | head -n 1)
+    [ -n "${_csrc}" ] || { err "v4l2loopback.c not found in the source tarball"; rm -rf "${_wd}"; return 1; }
+    _src=$(dirname "${_csrc}")
+
+    _rc=0
+    _patch_v4l2loopback_src "${_src}" || _rc=$?
+    if [ "${_rc}" -ne 0 ]; then
+        err "Could not apply the compat patch (code ${_rc}): the expected one-argument v4l2_fh_add/del defines were not found."
+        rm -rf "${_wd}"
+        return 1
+    fi
+    log "Removed the one-argument v4l2_fh_add/del compat defines."
+
+    log "Compiling v4l2loopback against ${KERNEL_SOURCE}"
+    make -C "${KERNEL_SOURCE}" M="${_src}" modules \
+        || { err "Patched v4l2loopback build failed"; rm -rf "${_wd}"; return 1; }
+    _ko="${_src}/v4l2loopback.ko"
+    [ -f "${_ko}" ] || { err "v4l2loopback.ko not produced"; rm -rf "${_wd}"; return 1; }
+
+    strip --strip-debug "${_ko}" 2>/dev/null || true
+    _dest="/usr/lib/modules/${KERNEL_VERSION}/extra/v4l2loopback"
+    install -d -m 0755 "${_dest}"
+    install -m 0644 "${_ko}" "${_dest}/v4l2loopback.ko"
+    xz --check=crc32 --lzma2=dict=512KiB -f "${_dest}/v4l2loopback.ko"
+    depmod -a "${KERNEL_VERSION}"
+
+    # The akmod pulled in the userspace v4l2loopback package as a dependency;
+    # keep it (no kmod RPM exists in this path to hold it in place).
+    dnf -y mark install v4l2loopback >/dev/null 2>&1 || true
+
+    rm -rf "${_wd}"
+    find "${_dest}" -name 'v4l2loopback.ko*' | grep -q . \
+        || { err "v4l2loopback module missing after install"; return 1; }
+    log "Installed patched v4l2loopback to ${_dest}"
+}
+
+# Print every version-release for which EVERY package named in $1
+# (space-separated) is available from the enabled repos, newest first.
+complete_kernel_versions() {
+    _avail=$(dnf -q repoquery --available --showduplicates \
+        --queryformat '%{name} %{version}-%{release}\n' $1 2>/dev/null | sort -u)
+    [ -n "${_avail}" ] || return 0
+    for _v in $(printf '%s\n' "${_avail}" | awk '{print $2}' | sort -uVr); do
+        _ok=true
+        for _n in $1; do
+            printf '%s\n' "${_avail}" | grep -qx "${_n} ${_v}" || { _ok=false; break; }
+        done
+        [ "${_ok}" = "true" ] && printf '%s\n' "${_v}"
+    done
+    return 0
+}
+
 # Make the repository that carries the selected kernel available.
 setup_kernel_repo() {
     case "${KERNEL_TYPE}" in
@@ -459,6 +558,55 @@ if [ "${KERNEL_REPLACE}" = "true" ]; then
     rm -rf /usr/lib/modules/* || true
 else
     log "Keeping the stock kernel; installing only its matching devel tree."
+    # No kernel is installed here, but keep the hooks quiet in case a scriptlet fires.
+    disable_kernel_install_hooks
+    STOCK_VERSION=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}\n' | sort -V | tail -n 1) || exit 1
+    STOCK_ARCH=$(rpm -E %_arch)
+    log "Installed stock kernel: ${STOCK_VERSION}"
+
+    # The repos can lag the base image. Everything we need has to exist at ONE
+    # version: every kernel package the base ships plus kernel-devel. Use the
+    # installed version if the repos carry the full set for it; otherwise fall
+    # back to the newest version for which they do.
+    STOCK_KPKGS=$(rpm -qa --qf '%{NAME}\n' \
+        | grep -E '^kernel(-core|-modules|-modules-core|-modules-extra)?$' | sort -u | tr '\n' ' ')
+    STOCK_NEED="${STOCK_KPKGS}kernel-devel"
+    log "Packages that must match: ${STOCK_NEED}"
+
+    _complete=$(complete_kernel_versions "${STOCK_NEED}")
+    if [ -z "${_complete}" ]; then
+        err "No kernel version in the enabled repos provides all of: ${STOCK_NEED}"
+        exit 1
+    fi
+    if printf '%s\n' "${_complete}" | grep -qx "${STOCK_VERSION}"; then
+        STOCK_TARGET="${STOCK_VERSION}"
+    else
+        STOCK_TARGET=$(printf '%s\n' "${_complete}" | head -n 1)
+    fi
+
+    if [ "${STOCK_TARGET}" != "${STOCK_VERSION}" ]; then
+        log "WARNING: the repos do not carry a complete set for the installed ${STOCK_VERSION}."
+        log "Switching the stock kernel to the newest complete set: ${STOCK_TARGET}."
+        _pkgs=""
+        for _n in ${STOCK_KPKGS}; do _pkgs="${_pkgs} ${_n}-${STOCK_TARGET}"; done
+        _newest=$(printf '%s\n%s\n' "${STOCK_VERSION}" "${STOCK_TARGET}" | sort -V | tail -n 1)
+        if [ "${_newest}" = "${STOCK_VERSION}" ]; then
+            # shellcheck disable=SC2086
+            dnf -y downgrade ${_pkgs}
+        else
+            # shellcheck disable=SC2086
+            dnf -y install ${_pkgs}
+        fi
+        # The old kernel's files are gone with its packages, but its
+        # untracked initramfs (and the directory) are not.
+        rm -rf "/usr/lib/modules/${STOCK_VERSION}.${STOCK_ARCH}"
+        # The new kernel has no initramfs yet; without one the image cannot boot.
+        if [ "${INITRAMFS}" != "true" ]; then
+            log "Forcing initramfs generation for the switched kernel."
+            INITRAMFS=true
+        fi
+    fi
+    KERNEL_PACKAGES="kernel-devel-${STOCK_TARGET}"
 fi
 
 log "Installing kernel packages: ${KERNEL_PACKAGES}"
@@ -470,6 +618,11 @@ dnf -y ${KERNEL_REPO_OPT} install ${KERNEL_PACKAGES} akmods
 
 KERNEL_VERSION=$(rpm -q "${KERNEL_PKG}" --queryformat '%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort -V | tail -n 1) || exit 1
 log "Kernel version: ${KERNEL_VERSION}"
+
+if [ "${KERNEL_TYPE}" = "stock" ] && [ "${KERNEL_VERSION}" != "${STOCK_TARGET}.${STOCK_ARCH}" ]; then
+    err "The stock kernel changed unexpectedly during install (expected ${STOCK_TARGET}.${STOCK_ARCH}, got ${KERNEL_VERSION})."
+    exit 1
+fi
 KERNEL_SOURCE="/usr/src/kernels/${KERNEL_VERSION}"
 
 if [ -n "${KERNEL_VERSION_MARK}" ]; then
