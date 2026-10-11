@@ -24,6 +24,10 @@ jobs:
           - lto-nvidia.yml
           - lts.yml
           - lts-nvidia.yml
+          - ml.yml
+          - ml-nvidia.yml
+          - hyperscale.yml
+          - hyperscale-nvidia.yml
           
     steps:
       - name: Build Custom Image
