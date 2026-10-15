@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
-IMAGE="ghcr.io/butrelinux/lab:latest"
+if [[ $# -lt 1 || -z "$1" ]]; then
+  echo "Usage: $0 <image-name>"
+  exit 1
+fi
+IMAGE="ghcr.io/butrelinux/$1"
 BUILDER="ghcr.io/osbuild/image-builder-cli:latest"
 
 SKIPINSTALL="${SKIPINSTALL:-0}"

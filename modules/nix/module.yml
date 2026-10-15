@@ -1,5 +1,5 @@
-name: butre-image-info
-shortdesc: The butre-image-info module writes custom image metadata to image-info.json and patches os-release.
+name: nix
+shortdesc: Multi-user Nix installer and seeding for EL10 bootc images 
 example: |
   type: nix
   flavor: upstream             # or determinate

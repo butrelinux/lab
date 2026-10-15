@@ -1,0 +1,7 @@
+[[customizations.user]]
+name = "butrelinux"
+password = "__CI_PASSWORD_HASH__"
+groups = ["wheel"]
+
+[customizations.sshd]
+password_authentication = true

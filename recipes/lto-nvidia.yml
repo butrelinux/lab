@@ -7,7 +7,6 @@ base-image: quay.io/centos-bootc/centos-bootc
 image-version: c10s
 modules:
   - from-file: common/common.yml
-  - from-file: common/nvidia.yml
 
   - type: custom-kernel
     source: local

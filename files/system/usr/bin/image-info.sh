@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # shellcheck disable=2046
-IMAGE_INFO_FILE="${IMAGE_INFO_FILE:-/usr/share/ublue-os/image-info.json}"
+IMAGE_INFO_FILE="${IMAGE_INFO_FILE:-/usr/share/butrelinux/image-info.json}"
 IMAGE_NAME="$(jq -r '.["image-name"]' < "${IMAGE_INFO_FILE}")"
 IMAGE_TAG="$(jq -r '.["image-tag"]' < "${IMAGE_INFO_FILE}")"
 

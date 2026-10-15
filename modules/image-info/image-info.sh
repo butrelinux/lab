@@ -23,8 +23,8 @@ tag=$(jq -r '.tag // "latest"' <<< "$1")
 like=$(jq -r '.like // "rhel fedora"' <<< "$1")
 logo=$(jq -r '.logo // "kde-logo-icon"' <<< "$1")
 home_url=$(jq -r '.home_url // "https://github.com/butrelinux"' <<< "$1")
-support_url=$(jq -r '.support_url // "https://github.com/butrelinux/lab/issues"' <<< "$1")
-documentation_url=$(jq -r '.documentation_url // "PLACEHOLDER"' <<< "$1")
+support_url=$(jq -r '.support_url // "https://github.com/butrelinux/butrelinux/issues"' <<< "$1")
+documentation_url=$(jq -r '.documentation_url // "http://github.com/butrelinux/docs"' <<< "$1")
 
 # Validate required field
 if [[ -z "$variant" || "$variant" == "null" ]]; then

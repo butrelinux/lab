@@ -1,7 +1,54 @@
 modules:
   - type: dnf
+    remove:
+      packages:
+        - linux-firmware
+        - rhc
+        - insights-client
+        - insights-core
+        - subscription-manager
+  - type: dnf
     install:
       packages:
+        - linux-firmware
+        - amd-ucode-firmware
+        - amd-gpu-firmware
+        - intel-gpu-firmware
+        - nvidia-gpu-firmware
+        - alsa-firmware
+        - alsa-sof-firmware
+        - intel-audio-firmware
+        - realtek-firmware
+        - atheros-firmware
+        - iwlwifi-dvm-firmware
+        - iwlwifi-mvm-firmware
+        - cirrus-audio-firmware
+        - brcmfmac-firmware
+        - iwlegacy-firmware
+        - libertas-firmware
+        - mt7xxx-firmware
+        - nxpwireless-firmware
+        - qcom-firmware
+        - tiwilink-firmware
+        - intel-vsc-firmware
+        - dvb-firmware
+        - mlxsw_spectrum-firmware
+        - mrvlprestera-firmware
+        - netronome-firmware
+        - uhd-firmware
+        - iscan-firmware
+        - linux-firmware
+        - NetworkManager-wifi
+        - NetworkManager-tui
+        - NetworkManager-openvpn
+        - NetworkManager-openconnect
+        - NetworkManager-l2tp
+        - NetworkManager-libreswan
+        - NetworkManager-wwan
+        - NetworkManager-bluetooth
+        - NetworkManager-ppp
+        - kf6-networkmanager-qt
+        - NetworkManager
         - kde-partitionmanager
         - krfb
         - krdc
@@ -27,7 +74,6 @@ modules:
         - kde-connect
         - bluedevil
         - dolphin
-        - kate
         - konsole
         - kio-admin
         - ark
@@ -52,6 +98,10 @@ modules:
         - alsa-firmware
         - pipewire-utils
         - plasma-pa
+        - nvtop
+        - distrobox
+        - firewalld
+        
   - type: dnf
     install:
       install-weak-deps: false
@@ -60,11 +110,6 @@ modules:
         - plasma-discover-flatpak
         - plasma-discover-libs
         - plasma-discover-kns
-    remove:
-      auto-remove: true
-      packages:
-        - rhc
-        - insights-client
 
   - type: fedora-rpm
     source: local

@@ -15,7 +15,7 @@ jobs:
       build_date: ${{ env.BUILD_DATE }}
 
     env:
-      IMAGES: "lts lts-nvidia lto lto-nvidia ml ml-nvidia hyperscale hyperscale-nvidia"
+      IMAGES: "lts lto lto-nvidia ml ml-nvidia hyperscale hyperscale-nvidia"
       MIRROR: "https://mirror.stream.centos.org/10-stream/BaseOS/x86_64/os"
 
     steps:
@@ -227,7 +227,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [hwe, nvidia, lto-hwe, lto-nvidia]
+        variant: [lts, lto, lto-nvidia, ml, ml-nvidia, hyperscale, hyperscale-nvidia]
     steps:
       - uses: actions/checkout@v7
 

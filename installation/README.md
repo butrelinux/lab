@@ -56,9 +56,12 @@ Make the script executable:
 
 ### Build and boot
 
-Run the script without arguments:
+Run the script:
 
-    ./go.sh
+    ./go.sh <variant>:<tag>
+    ./go.sh lto:latest
+    
+    
 
 The script will:
 
@@ -71,7 +74,7 @@ The script will:
 
 Build the disk without starting QEMU:
 
-    BUILDONLY=1 ./go.sh
+    BUILDONLY=1 ./go.sh <variant>:<tag>
 
 The generated disk will be:
 
@@ -81,7 +84,7 @@ The generated disk will be:
 
 Skip the build and boot the existing QCOW2 disk:
 
-    SKIPINSTALL=1 ./go.sh
+    SKIPINSTALL=1 ./go.sh <variant>:<tag>
 
 The disk must already exist.
 
@@ -89,7 +92,7 @@ The disk must already exist.
 
 Remove generated files in `output/`, rebuild the disk, and start QEMU:
 
-    CLEAN=1 ./go.sh
+    CLEAN=1 ./go.sh <variant>:<tag>
 
 **Warning:** `CLEAN=1` deletes the contents of the script's `output/` directory. Store anything important elsewhere.
 

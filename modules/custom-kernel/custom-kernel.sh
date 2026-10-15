@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 #### derived from https://github.com/jokokucing/Origami-Linux/blob/main/modules/custom-kernel/custom-kernel.sh
 #### Hardened for EL10.
@@ -204,14 +204,14 @@ ml | kernel-ml)
     KERNEL_TYPE="ml"
     KERNEL_PKG="kernel-ml-core"
     # core/modules/modules-core come in as dependencies
-    KERNEL_PACKAGES="kernel-ml kernel-ml-devel kernel-ml-modules-extra"
+    KERNEL_PACKAGES="kernel-ml kernel-ml-devel kernel-ml-modules kernel-ml-modules-extra"
     KERNEL_BUILD_PKGS="kernel-ml-devel"
     KERNEL_REPO_OPT="--enablerepo=elrepo-kernel"
     KERNEL_VERSION_MARK="*.elrepo.*"
     ;;
 hyperscale)
     KERNEL_PKG="kernel-core"
-    KERNEL_PACKAGES="kernel kernel-modules-extra kernel-devel kernel-devel-matched"
+    KERNEL_PACKAGES="kernel kernel-modules-extra kernel-modules-extra kernel-devel kernel-devel-matched"
     KERNEL_BUILD_PKGS="kernel-devel kernel-devel-matched"
     KERNEL_VERSION_MARK="*.hs*"
     ;;
@@ -223,7 +223,7 @@ stock)
     # KERNEL_PACKAGES is set below to the devel package for the EXACT installed
     # kernel version (kernel-devel-matched would let dnf downgrade the kernel
     # to whatever version the repos happen to carry).
-    KERNEL_PACKAGES=""
+    KERNEL_PACKAGES="kernel-modules kernel-modules-extra kernel-modules-extra-matched"
     KERNEL_BUILD_PKGS="kernel-devel-matched kernel-devel"
     ;;
 *)
@@ -588,6 +588,9 @@ if [ "${KERNEL_REPLACE}" = "true" ]; then
     rm -rf /usr/lib/modules/* || true
 else
     log "Keeping the stock kernel; installing only its matching devel tree."
+    log "##########################################################################"
+    log "#####               ! WARNING: UNSTABLE.  DO NOT USE !               #####"
+    log "##########################################################################"
     # No kernel is installed here, but keep the hooks quiet in case a scriptlet fires.
     disable_kernel_install_hooks
     STOCK_VERSION=$(rpm -q kernel-core --queryformat '%{VERSION}-%{RELEASE}\n' | sort -V | tail -n 1) || exit 1

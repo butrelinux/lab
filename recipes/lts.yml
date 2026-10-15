@@ -9,11 +9,11 @@ modules:
   - from-file: common/common.yml
 
 
-  - type: custom-kernel
-    source: local
-    kernel: stock
-    initramfs: true
-    nvidia: false
+#  - type: custom-kernel
+#    source: local
+#    kernel: stock
+#    initramfs: true
+#    nvidia: false
 
   - type: image-info
     source: local
