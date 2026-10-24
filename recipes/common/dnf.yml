@@ -1,0 +1,151 @@
+modules:
+  - type: dnf
+    remove:
+      packages:
+        - linux-firmware
+        - rhc
+        - insights-client
+        - insights-core
+        - subscription-manager
+  - type: dnf
+    install:
+      packages:
+        # core system
+        - earlyoom
+        - firewalld
+        - tuned
+        - tuned-ppd
+        - tuned-profiles-atomic
+        - zram-generator
+
+        # firmware
+        - linux-firmware
+        - amd-gpu-firmware
+        - amd-ucode-firmware
+        - alsa-firmware
+        - alsa-sof-firmware
+        - atheros-firmware
+        - brcmfmac-firmware
+        - cirrus-audio-firmware
+        - dvb-firmware
+        - intel-audio-firmware
+        - intel-gpu-firmware
+        - intel-vsc-firmware
+        - iwlwifi-dvm-firmware
+        - iwlwifi-mvm-firmware
+        - iwlegacy-firmware
+        - iscan-firmware
+        - libertas-firmware
+        - mlxsw_spectrum-firmware
+        - mrvlprestera-firmware
+        - mt7xxx-firmware
+        - netronome-firmware
+        - nvidia-gpu-firmware
+        - nxpwireless-firmware
+        - qcom-firmware
+        - realtek-firmware
+        - tiwilink-firmware
+        - uhd-firmware
+
+        # audio / multimedia infrastructure
+        - pipewire
+        - pipewire-alsa
+        - pipewire-gstreamer
+        - pipewire-jack-audio-connection-kit
+        - pipewire-pulseaudio
+        - pipewire-utils
+        - wireplumber
+
+        # gstreamer
+        - gstreamer1
+        - gstreamer1-plugin-libav
+        - gstreamer1-plugins-bad-free
+        - gstreamer1-plugins-bad-free-libs
+        - gstreamer1-plugins-base
+        - gstreamer1-plugins-base-tools
+        - gstreamer1-plugins-good
+        - gstreamer1-plugins-ugly-free
+        - gstreamer1-svt-av1
+        - gstreamer1-svt-vp9
+        - libcamera-gstreamer
+        - libnice-gstreamer1
+        - lsp-plugins-gstreamer
+        - vlc-plugin-gstreamer
+
+        # network manager
+        - NetworkManager
+        - NetworkManager-bluetooth
+        - NetworkManager-l2tp
+        - NetworkManager-libreswan
+        - NetworkManager-openconnect
+        - NetworkManager-openvpn
+        - NetworkManager-ppp
+        - NetworkManager-tui
+        - NetworkManager-wifi
+        - NetworkManager-wwan
+        - kf6-networkmanager-qt
+
+        # security / SELinux
+        - libsemanage
+        - policycoreutils
+        - policycoreutils-devel
+        - policycoreutils-python-utils
+        - selinux-policy-targeted
+
+        # KDE Plasma desktop
+        - plasma-desktop
+        - powerdevil
+        - plasma-workspace-wayland
+        - kde-settings-plasma
+        - sddm
+        - sddm-breeze
+        - sddm-kcm
+        - polkit-kde
+        - plasma-nm
+        - plasma-pa
+        - plasma-disks
+        - plasma-systemmonitor
+        - kscreen
+        - kinfocenter
+        - kde-gtk-config
+        - flatpak-kcm
+        - xdg-desktop-portal-kde
+
+        # KDE applications / utilities
+        - ark
+        - dolphin
+        - kde-connect
+        - kde-partitionmanager
+        - kcalc
+        - khelpcenter
+        - konsole
+        - krdc
+        - krfb
+        - kio-admin
+        - okular
+        - spectacle
+        - bluedevil
+        - plasma-browser-integration
+
+        # userspace / monitoring / containers
+        - distrobox
+        - htop
+        - lm_sensors
+        - nvtop
+
+  - type: dnf
+    install:
+      install-weak-deps: false
+      packages:
+        - plasma-discover
+        - plasma-discover-flatpak
+        - plasma-discover-libs
+        - plasma-discover-kns
+
+  - type: fedora-rpm
+    source: local
+    releasever: "44"
+    repos:
+      - https://copr.fedorainfracloud.org/coprs/theblackdon/dcli-bootc/repo/fedora-44/theblackdon-dcli-bootc-fedora-44.repo
+    install:
+      - dcli-bootc

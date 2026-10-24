@@ -1,0 +1,13 @@
+[Unit]
+Description=Overlay Writable Local Themes Over Immutable System Themes
+Before=sddm.service
+ConditionPathExists=/var/lib/sddm/themes
+
+[Mount]
+What=overlay
+Where=/usr/share/sddm/themes
+Type=overlay
+Options=lowerdir=/usr/share/sddm/themes,upperdir=/var/lib/sddm/themes,workdir=/var/lib/sddm/.theme-work
+
+[Install]
+WantedBy=local-fs.target

@@ -1,0 +1,11 @@
+name: nix
+shortdesc: Multi-user Nix installer and seeding for EL10 bootc images 
+example: |
+  type: nix
+  flavor: upstream             # or determinate
+  nix-version: latest          # or pin, e.g. a specific release
+  experimental-features: [nix-command, flakes]
+  build-users: 32
+  selinux: true
+  extra-conf: |
+    trusted-users = root @wheel

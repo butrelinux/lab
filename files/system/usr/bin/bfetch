@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+get_config() {
+	FASTFETCH_CONFIG_FILE="${FASTFETCH_CONFIG_FILE:-/etc/butrelinux/fastfetch.json}"
+	QUERY="$1"
+	FALLBACK="$2"
+	shift
+	shift
+	OUTPUT="$(jq -r "${QUERY}" "${FASTFETCH_CONFIG_FILE}" 2>/dev/null || echo "${FALLBACK}")"
+	if [ "${OUTPUT}" == "null" ] ; then
+		echo "${FALLBACK}"
+		return
+	fi
+	echo "${OUTPUT}"
+}
+FASTFETCH_BIN="${FASTFETCH_BIN:-$(command -v fastfetch)}"
+
+if [ -z "${FASTFETCH_BIN}" ] || [ ! -x "${FASTFETCH_BIN}" ]; then
+	printf '%s\n' \
+    'Error: fastfetch is not installed or is not executable.' >&2
+	printf 'For more detailed output, install fastfetch with \033[31mpkg-add fastfetch\033[0m or ensure it is in your PATH.'
+	printf '\n'
+	printf '\033[1;36m%s\033[0m\n' "$(whoami)@$(hostname)"
+	printf '%s\n' '----------------'
+	printf 'OS   %s\n' "$(uname -s)"
+	printf 'KERN %s\n' "$(uname -r)"
+	printf 'SH   %s\n' "${SHELL##*/}"
+	printf 'UP   %s\n' "$(uptime -p 2>/dev/null | sed 's/^up //')"
+	exit 0
+fi
+FASTFETCH_CONFIG="$(get_config '."fastfetch-config"' "/usr/share/butrelinux/fastfetch.jsonc")"
+SHUFFLE_LOGO="$(get_config '."shuffle-logo"' "false")"
+LOGO_DIRECTORY="$(get_config '."logo-directory"' "/usr/share/butrelinux/symbols")"
+
+export DEFAULT_THEME
+DEFAULT_THEME="$(get_config '."default-theme"' "slate")"
+if [ "$SHUFFLE_LOGO" == "true" ] ; then
+  FETCH_LOGO="$(find "$LOGO_DIRECTORY" -type f | shuf -n 1)"
+  exec fastfetch --logo "$FETCH_LOGO" --config "${FASTFETCH_CONFIG}" "${@}"
+else
+  exec fastfetch --config "${FASTFETCH_CONFIG}" "${@}"
+fi

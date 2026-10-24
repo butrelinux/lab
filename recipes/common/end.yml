@@ -1,0 +1,38 @@
+modules:
+  - type: fonts
+    fonts:
+      nerd-fonts:
+       - JetBrainsMono
+       - NerdFontsSymbolsOnly
+       - Noto
+        
+  - type: systemd
+    system:
+      enabled:
+        - sddm.service
+        - tuned.service
+        - tuned-ppd.service
+        - earlyoom.service
+        - NetworkManager.service
+        - usr-share-sddm-faces.mount
+        - usr-share-sddm-themes.mount
+      disabled:
+        - nfs-client.target
+      masked:
+        - rpm-ostree-countme.service
+        - rpm-ostree-countme.timer
+        - rpcbind.service
+        - rpcbind.socket
+        - system-flatpak-setup.timer
+        - bootc-fetch-apply-updates.service
+        - bootc-fetch-apply-updates.timer
+
+  - type: kargs
+    kargs:
+      - amdgpu.ppfeaturemask=0xffffffff
+      - split_lock_detect=off
+
+  - type: clean-repos
+    source: local
+
+  - type: signing

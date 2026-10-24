@@ -1,0 +1,13 @@
+[Unit]
+Description=Overlay Writable Local Faces Over Immutable System Faces
+Before=sddm.service
+ConditionPathExists=/var/lib/sddm/faces
+
+[Mount]
+What=overlay
+Where=/usr/share/sddm/faces
+Type=overlay
+Options=lowerdir=/usr/share/sddm/faces,upperdir=/var/lib/sddm/faces,workdir=/var/lib/sddm/.face-work
+
+[Install]
+WantedBy=local-fs.target

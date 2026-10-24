@@ -1,0 +1,398 @@
+name: Build and test images
+
+on:
+  workflow_run:
+    workflows: ["bluebuild"]
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: image-tests-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test ${{ matrix.variant }}
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - lab
+
+          # there are some loops down in generate combined readme that includes these as well.  fix the duplication later.  for now, just be sure to add them there too
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            podman \
+            qemu-system-x86 \
+            qemu-utils \
+            openssh-client \
+            sshpass \
+            openssl
+
+      - name: Pull container images
+        env:
+          IMAGE: ghcr.io/butrelinux/${{ matrix.variant }}
+          BUILDER: ghcr.io/osbuild/image-builder-cli:latest
+        run: |
+          set -euo pipefail
+          sudo podman pull "$IMAGE"
+          sudo podman pull "$BUILDER"
+
+      - name: Generate ephemeral credentials and Blueprint
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          mkdir -p "output/$VARIANT" "results/$VARIANT"
+
+          GUEST_PASSWORD="$(openssl rand -hex 24)"
+          PASSWORD_HASH="$(
+            printf '%s' "$GUEST_PASSWORD" |
+              openssl passwd -6 -stdin
+          )"
+
+          printf '%s' "$GUEST_PASSWORD" \
+            > "$RUNNER_TEMP/guest-password"
+
+          export PASSWORD_HASH
+
+          python3 - .github/tests/config.toml.in \
+            "output/$VARIANT/config.toml" <<'PY'
+          import os
+          import pathlib
+          import sys
+
+          template = pathlib.Path(sys.argv[1]).read_text()
+          marker = "__CI_PASSWORD_HASH__"
+
+          if template.count(marker) != 1:
+              raise SystemExit(
+                  f"Expected exactly one {marker} placeholder"
+              )
+
+          config = template.replace(
+              marker, os.environ["PASSWORD_HASH"]
+          )
+
+          pathlib.Path(sys.argv[2]).write_text(config)
+          PY
+
+          unset GUEST_PASSWORD PASSWORD_HASH
+
+      - name: Build qcow2 image
+        id: build
+        env:
+          VARIANT: ${{ matrix.variant }}
+          IMAGE: ghcr.io/butrelinux/${{ matrix.variant }}
+          BUILDER: ghcr.io/osbuild/image-builder-cli:latest
+        run: |
+          set -euo pipefail
+
+          OUTPUT_DIR="$PWD/output/$VARIANT"
+          CONFIG="$OUTPUT_DIR/config.toml"
+
+          sudo podman --cgroup-manager=cgroupfs run \
+            --rm \
+            --privileged \
+            -v "$OUTPUT_DIR:/output" \
+            -v "$CONFIG:/config.toml:ro" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            "$BUILDER" \
+            build \
+            --bootc-ref "$IMAGE" \
+            --blueprint /config.toml \
+            --output-dir /output \
+            --output-name test-disk \
+            qcow2
+
+          sudo chown -R "$(id -u):$(id -g)" "$OUTPUT_DIR"
+
+          test -f "$OUTPUT_DIR/test-disk.qcow2"
+
+      - name: Boot VM and run tests
+        id: tests
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -Eeuo pipefail
+
+          DISK="$PWD/output/$VARIANT/test-disk.qcow2"
+          RESULTS="$PWD/results/$VARIANT"
+          PIDFILE="$RUNNER_TEMP/qemu-$VARIANT.pid"
+          PASSWORD_FILE="$RUNNER_TEMP/guest-password"
+
+          mkdir -p "$RESULTS"
+
+          if [[ ! -f "$PASSWORD_FILE" ]]; then
+            echo "Guest password file is missing" >&2
+            exit 1
+          fi
+
+          GUEST_PASSWORD="$(cat "$PASSWORD_FILE")"
+          export SSHPASS="$GUEST_PASSWORD"
+          unset GUEST_PASSWORD
+
+          cleanup() {
+            set +e
+
+            if [[ -f "$PIDFILE" ]]; then
+              QEMU_PID="$(sudo cat "$PIDFILE" 2>/dev/null)"
+
+              if [[ "$QEMU_PID" =~ ^[0-9]+$ ]]; then
+                sudo kill "$QEMU_PID" 2>/dev/null
+              fi
+
+              sudo rm -f "$PIDFILE" 2>/dev/null
+            fi
+
+            sudo chown -R "$(id -u):$(id -g)" "$RESULTS" \
+              2>/dev/null
+
+            unset SSHPASS
+            rm -f "$PASSWORD_FILE"
+          }
+
+          trap cleanup EXIT
+
+          if [[ -e /dev/kvm && -r /dev/kvm && -w /dev/kvm ]]; then
+            ACCEL_ARGS=(-enable-kvm -cpu host)
+          else
+            ACCEL_ARGS=(-accel tcg -cpu max)
+          fi
+
+          sudo qemu-system-x86_64 \
+            -name "$VARIANT" \
+            "${ACCEL_ARGS[@]}" \
+            -m 2048 \
+            -smp 2 \
+            -drive "file=$DISK,if=virtio,format=qcow2" \
+            -vga virtio \
+            -device virtio-net-pci,netdev=n1 \
+            -netdev user,id=n1,hostfwd=tcp:127.0.0.1:2222-:22 \
+            -serial "file:$RESULTS/serial.log" \
+            -display none \
+            -monitor none \
+            -pidfile "$PIDFILE" \
+            -daemonize
+
+          SSH_OPTS=(
+            -p 2222
+            -o PreferredAuthentications=password
+            -o PubkeyAuthentication=no
+            -o StrictHostKeyChecking=no
+            -o UserKnownHostsFile=/dev/null
+            -o ConnectTimeout=5
+            -o NumberOfPasswordPrompts=1
+          )
+
+          ready=false
+
+          echo "Waiting for $VARIANT to become SSH-accessible..."
+
+          for attempt in $(seq 1 120); do
+            if sshpass -e ssh "${SSH_OPTS[@]}" \
+              butrelinux@127.0.0.1 true 2>/dev/null; then
+              ready=true
+              echo "SSH is ready after attempt $attempt"
+              break
+            fi
+
+            QEMU_PID="$(sudo cat "$PIDFILE" 2>/dev/null || true)"
+            if [[ "$QEMU_PID" =~ ^[0-9]+$ ]] &&
+               ! sudo kill -0 "$QEMU_PID" 2>/dev/null; then
+              echo "QEMU exited before SSH became ready" >&2
+              break
+            fi
+
+            sleep 5
+          done
+
+          if [[ "$ready" != true ]]; then
+            echo "Guest did not become SSH-accessible" >&2
+            echo "Last lines of serial output:" >&2
+            sudo tail -n 100 "$RESULTS/serial.log" >&2 || true
+            exit 1
+          fi
+
+          export SSH_HOST=127.0.0.1
+          export SSH_PORT=2222
+          export SSH_USER=butrelinux
+          export RESULTS_DIR="$RESULTS"
+
+          bash .github/tests/test.sh
+
+      - name: Record result
+        if: always()
+        env:
+          VARIANT: ${{ matrix.variant }}
+          BUILD: ${{ steps.build.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: |
+          set -euo pipefail
+          mkdir -p "results/$VARIANT"
+
+          {
+            echo "variant=$VARIANT"
+            echo "build=$BUILD"
+            echo "tests=$TESTS"
+          } > "results/$VARIANT/status.txt"
+
+      - name: Remove generated credentials and config
+        if: always()
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          rm -f "output/$VARIANT/config.toml"
+          rm -f "$RUNNER_TEMP/guest-password"
+
+      - name: Fix result file ownership
+        if: always()
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" "results/$VARIANT" \
+            2>/dev/null || true
+
+      - name: Upload variant results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: results-${{ matrix.variant }}
+          path: results/${{ matrix.variant }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  aggregate:
+    name: Aggregate results and publish README
+    if: always()
+    needs: test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Download variant results
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: results-*
+          path: collected
+          merge-multiple: false
+
+      - name: Generate combined README
+        env:
+          MATRIX_RESULT: ${{ needs.test.result }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p .github/tests
+
+          {
+            echo "# Image test results"
+            echo
+            echo "Workflow run: [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo
+            echo "Overall matrix result: **${MATRIX_RESULT}**"
+            echo
+            echo "| Variant | Build | Tests |"
+            echo "|---|---|---|"
+
+            for variant in \
+              lab; do
+
+              status="collected/results-$variant/status.txt"
+
+              if [[ -f "$status" ]]; then
+                build="$(sed -n 's/^build=//p' "$status")"
+                tests="$(sed -n 's/^tests=//p' "$status")"
+                printf '| %s | %s | %s |\n' "$variant" "$build" "$tests"
+              else
+                printf '| %s | missing | missing |\n' "$variant"
+              fi
+            done
+
+            echo
+            echo "---"
+            echo
+            echo "# System details"
+            echo
+
+            for variant in \
+              lab; do
+
+              report="collected/results-$variant/report.md"
+
+              echo "### $variant"
+              echo
+              if [[ -f "$report" ]]; then
+                sed '1{/^# Image test report$/d;}' "$report"
+              else
+                echo "System report unavailable."
+              fi
+
+              echo
+            done
+
+            echo "---"
+            echo
+            echo "Full logs and raw command output are available in the workflow run artifacts."
+          } > .github/tests/README.md
+
+      - name: Commit README to default branch
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (
+            github.event_name == 'workflow_run' &&
+            github.event.workflow_run.conclusion == 'success'
+          )
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .github/tests/README.md
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Update image test results [skip ci]"
+            git push origin "HEAD:$DEFAULT_BRANCH"
+          fi
+
+      - name: Upload combined report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: all-image-test-results
+          path: |
+            collected/
+            .github/tests/README.md
+          if-no-files-found: warn
+          retention-days: 30

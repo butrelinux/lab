@@ -1,0 +1,4 @@
+modules:
+  - from-file: common/bootstrap.yml
+  - from-file: common/nix.yml
+  - from-file: common/dnf.yml
