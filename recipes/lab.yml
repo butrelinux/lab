@@ -8,24 +8,24 @@ image-version: c10s
 modules:
   - from-file: common/common.yml
 
-  - type: custom-kernel
-    source: local
-    kernel: hyperscale
-    initramfs: true
-    nvidia: true
-    sign:                 # Optional — omit the entire block to disable SecureBoot signing
-      key: /tmp/certs/MOK.key
-      cert: /tmp/certs/MOK.pem
-      mok-password: BlueBuild
-    secrets:
-    - type: file
-      source: ./MOK.key
-      mount:
-        type: file
-        destination: /tmp/certs/MOK.key
+#  - type: custom-kernel
+#    source: local
+#    kernel: hyperscale
+#    initramfs: true
+#    nvidia: true
+#    sign:                 # Optional — omit the entire block to disable SecureBoot signing
+#      key: /tmp/certs/MOK.key
+#      cert: /tmp/certs/MOK.pem
+#      mok-password: BlueBuild
+#    secrets:
+#    - type: file
+#      source: ./MOK.key
+#      mount:
+#        type: file
+#        destination: /tmp/certs/MOK.key
 
   - type: image-info
-    source: local
-    variant: hyperscale-nvidia
+    source: ghcr.io/butrelinux/modules
+    variant: lab
   
   - from-file: common/end.yml
