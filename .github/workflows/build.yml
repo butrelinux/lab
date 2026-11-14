@@ -33,4 +33,3 @@ jobs:
           maximize_build_space: true
           chunkah: true
           verify_install: true
-          cli_version: v0.9.41
