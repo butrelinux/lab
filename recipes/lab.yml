@@ -3,29 +3,18 @@
 name: lab
 description: butrelinux testing environment
 
-base-image: quay.io/centos-bootc/centos-bootc
-image-version: c10s
+base-image: ghcr.io/butrelinux/hyperscale
+image-version: lateset
 modules:
-  - from-file: common/common.yml
 
-#  - type: custom-kernel
-#    source: local
-#    kernel: hyperscale
-#    initramfs: true
-#    nvidia: true
-#    sign:                 # Optional — omit the entire block to disable SecureBoot signing
-#      key: /tmp/certs/MOK.key
-#      cert: /tmp/certs/MOK.pem
-#      mok-password: BlueBuild
-#    secrets:
-#    - type: file
-#      source: ./MOK.key
-#      mount:
-#        type: file
-#        destination: /tmp/certs/MOK.key
+# ideally this should be empty other than image-info and signing.  anything that goes in here should eventually end up on the main image
 
+
+
+
+# DO NOT TOUCH BELOW THIS LINE
   - type: image-info
     source: ghcr.io/butrelinux/modules
     variant: lab
   
-  - from-file: common/end.yml
+  - type: signing
